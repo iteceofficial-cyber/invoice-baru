@@ -1,0 +1,562 @@
+import initSqlJs from 'sql.js';
+import type { Database, QueryExecResult } from 'sql.js';
+import fs from 'fs';
+import path from 'path';
+import bcrypt from 'bcryptjs';
+
+let dbInstance: Database | null = null;
+const isVercel = !!process.env.VERCEL;
+const DATA_DIR = isVercel ? '/tmp/data' : path.resolve(process.cwd(), 'data');
+const DB_FILE = path.join(DATA_DIR, 'database.sqlite');
+const SEED_FILE = path.resolve(process.cwd(), 'data', 'database.sqlite');
+
+export async function getDb(): Promise<Database> {
+  if (dbInstance) return dbInstance;
+
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+  } catch (err) {
+    console.warn('[Database] Could not create DATA_DIR, will use in-memory SQLite:', err);
+  }
+
+  const SQL = await initSqlJs();
+
+  // If on Vercel and seed file exists, copy seed file to writable /tmp
+  if (isVercel && fs.existsSync(SEED_FILE) && !fs.existsSync(DB_FILE)) {
+    try {
+      fs.copyFileSync(SEED_FILE, DB_FILE);
+    } catch (e) {
+      console.warn('[Database] Could not copy seed DB to /tmp, will load directly or init fresh');
+    }
+  }
+
+  const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+
+  if (targetFile) {
+    try {
+      const fileBuffer = fs.readFileSync(targetFile);
+      dbInstance = new SQL.Database(fileBuffer);
+    } catch (err) {
+      console.error('Error loading existing database file, creating new database:', err);
+      dbInstance = new SQL.Database();
+    }
+  } else {
+    dbInstance = new SQL.Database();
+  }
+
+  // Enable foreign keys
+  dbInstance.run('PRAGMA foreign_keys = ON;');
+  initSchemaAndSeed(dbInstance);
+  saveDb();
+
+  return dbInstance;
+}
+
+export function saveDb() {
+  if (!dbInstance) return;
+  try {
+    const data = dbInstance.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_FILE, buffer);
+  } catch (err) {
+    // In serverless / read-only environment, keep changes in-memory safely
+    console.warn('[Database] Warning: Could not write to disk, changes preserved in memory:', err);
+  }
+}
+
+// Helper to execute select queries and return array of objects
+export function queryAll<T = any>(sql: string, params: any[] = []): T[] {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const stmt = dbInstance.prepare(sql);
+  stmt.bind(params);
+  const results: T[] = [];
+  while (stmt.step()) {
+    results.push(stmt.getAsObject() as T);
+  }
+  stmt.free();
+  return results;
+}
+
+// Helper to execute single row query
+export function queryOne<T = any>(sql: string, params: any[] = []): T | null {
+  const rows = queryAll<T>(sql, params);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+// Helper to execute insert/update/delete and return lastInsertId and changes
+export function runQuery(sql: string, params: any[] = []): { lastInsertRowId: number; changes: number } {
+  if (!dbInstance) throw new Error('Database not initialized');
+  dbInstance.run(sql, params);
+  const lastIdResult = dbInstance.exec('SELECT last_insert_rowid() as id;');
+  const lastInsertRowId = (lastIdResult[0]?.values[0]?.[0] as number) || 0;
+  const changesResult = dbInstance.exec('SELECT changes() as cnt;');
+  const changes = (changesResult[0]?.values[0]?.[0] as number) || 0;
+  saveDb();
+  return { lastInsertRowId, changes };
+}
+
+function initSchemaAndSeed(db: Database) {
+  // 1. Roles table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      description TEXT
+    );
+  `);
+
+  // 2. Users table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role_id INTEGER NOT NULL,
+      full_name TEXT NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (role_id) REFERENCES roles (id)
+    );
+  `);
+
+  // 3. Categories table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      description TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // 4. Products table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      category_id INTEGER,
+      unit TEXT NOT NULL DEFAULT 'Pcs',
+      price REAL NOT NULL DEFAULT 0,
+      stock INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      description TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (category_id) REFERENCES categories (id)
+    );
+  `);
+
+  // 5. Customers table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      address TEXT,
+      phone TEXT,
+      email TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // 6. Invoices table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_number TEXT UNIQUE NOT NULL,
+      customer_id INTEGER,
+      customer_name TEXT NOT NULL,
+      customer_address TEXT,
+      customer_phone TEXT,
+      activity_date TEXT NOT NULL,
+      due_date TEXT,
+      bank_account_no TEXT,
+      bank_name TEXT,
+      bank_account_name TEXT,
+      notes TEXT,
+      subtotal REAL NOT NULL DEFAULT 0,
+      discount_type TEXT DEFAULT 'fixed',
+      discount_rate REAL DEFAULT 0,
+      discount_amount REAL DEFAULT 0,
+      tax_percent REAL DEFAULT 11,
+      tax_amount REAL DEFAULT 0,
+      total_amount REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'paid',
+      created_by_user_id INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers (id),
+      FOREIGN KEY (created_by_user_id) REFERENCES users (id)
+    );
+  `);
+
+  // 7. Invoice items table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invoice_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      invoice_id INTEGER NOT NULL,
+      product_id INTEGER,
+      product_code TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      qty INTEGER NOT NULL DEFAULT 1,
+      unit TEXT NOT NULL DEFAULT 'Pcs',
+      price REAL NOT NULL DEFAULT 0,
+      subtotal REAL NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (invoice_id) REFERENCES invoices (id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products (id)
+    );
+  `);
+
+  // 8. Company settings table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS company_settings (
+      id INTEGER PRIMARY KEY,
+      company_name TEXT NOT NULL,
+      logo_url TEXT,
+      address TEXT,
+      phone TEXT,
+      email TEXT,
+      website TEXT,
+      bank_account_no TEXT,
+      bank_name TEXT,
+      bank_account_name TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // 9. Invoice settings table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invoice_settings (
+      id INTEGER PRIMARY KEY,
+      prefix TEXT DEFAULT 'INV',
+      number_format TEXT DEFAULT 'INV/{YYYY}/{MM}/{NUMBER}',
+      start_number INTEGER DEFAULT 1,
+      date_format TEXT DEFAULT 'DD/MM/YYYY',
+      currency TEXT DEFAULT 'IDR',
+      default_tax_percent REAL DEFAULT 11,
+      default_discount REAL DEFAULT 0,
+      default_notes TEXT,
+      signature_text TEXT DEFAULT 'Hormat Kami,',
+      signer_name TEXT DEFAULT 'Mohamad Rizal',
+      signer_title TEXT DEFAULT 'Direktur Operasional Info Papandayan',
+      footer_text TEXT,
+      primary_color TEXT DEFAULT '#136239',
+      secondary_color TEXT DEFAULT '#7ba892',
+      app_name TEXT DEFAULT 'Info Papandayan - Invoice & Logistik',
+      header_image_url TEXT DEFAULT '/invoice-header.svg',
+      footer_image_url TEXT DEFAULT '/invoice-footer.svg',
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  try {
+    db.run(`ALTER TABLE invoice_settings ADD COLUMN header_image_url TEXT DEFAULT '/invoice-header.svg';`);
+  } catch (e) {}
+  try {
+    db.run(`ALTER TABLE invoice_settings ADD COLUMN footer_image_url TEXT DEFAULT '/invoice-footer.svg';`);
+  } catch (e) {}
+
+  // 10. Activity logs table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS activity_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      username TEXT NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      ip_address TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Seed default roles if empty
+  const roleCheck = db.exec('SELECT COUNT(*) as cnt FROM roles;');
+  const roleCount = (roleCheck[0]?.values[0]?.[0] as number) || 0;
+  if (roleCount === 0) {
+    db.run(`
+      INSERT INTO roles (id, name, description) VALUES
+      (1, 'super_admin', 'Super Admin - Memiliki akses penuh ke seluruh sistem dan konfigurasi'),
+      (2, 'admin', 'Admin - Mengelola operasional invoice, produk, pelanggan, dan laporan');
+    `);
+  }
+
+  // Seed default users if empty
+  const userCheck = db.exec('SELECT COUNT(*) as cnt FROM users;');
+  const userCount = (userCheck[0]?.values[0]?.[0] as number) || 0;
+  if (userCount === 0) {
+    const adminHash = bcrypt.hashSync('admin123', 10);
+    const staffHash = bcrypt.hashSync('staff123', 10);
+    db.run(`
+      INSERT INTO users (id, username, email, password_hash, role_id, full_name, is_active) VALUES
+      (1, 'admin', 'admin@invoicemanager.id', '${adminHash}', 1, 'Administrator Utama', 1),
+      (2, 'staff', 'staff@invoicemanager.id', '${staffHash}', 2, 'Staff Logistik & Invoice', 1);
+    `);
+  }
+
+  // Seed default company settings if empty
+  const compCheck = db.exec('SELECT COUNT(*) as cnt FROM company_settings;');
+  const compCount = (compCheck[0]?.values[0]?.[0] as number) || 0;
+  if (compCount === 0) {
+    db.run(`
+      INSERT INTO company_settings (
+        id, company_name, logo_url, address, phone, email, website,
+        bank_account_no, bank_name, bank_account_name
+      ) VALUES (
+        1,
+        'Info Papandayan',
+        '/invoice-header.svg',
+        'Jl. Kawah Papandayan, Karamat Wangi, Kec. Cisurupan, Kab. Garut',
+        '+62 822-4063-0123 / +62 813-2127-3552',
+        'info@infopapandayan.com',
+        'https://infopapandayan.com',
+        '131-00-1849201-8',
+        'Bank Mandiri KCP Garut',
+        'Info Papandayan'
+      );
+    `);
+  } else {
+    db.run(`
+      UPDATE company_settings
+      SET company_name = 'Info Papandayan',
+          logo_url = '/invoice-header.svg',
+          address = 'Jl. Kawah Papandayan, Karamat Wangi, Kec. Cisurupan, Kab. Garut',
+          phone = '+62 822-4063-0123 / +62 813-2127-3552',
+          email = 'info@infopapandayan.com',
+          website = 'https://infopapandayan.com',
+          bank_account_no = '131-00-1849201-8',
+          bank_name = 'Bank Mandiri KCP Garut',
+          bank_account_name = 'Info Papandayan'
+      WHERE id = 1;
+    `);
+  }
+
+  // Seed default invoice settings if empty
+  const invSetCheck = db.exec('SELECT COUNT(*) as cnt FROM invoice_settings;');
+  const invSetCount = (invSetCheck[0]?.values[0]?.[0] as number) || 0;
+  if (invSetCount === 0) {
+    db.run(`
+      INSERT INTO invoice_settings (
+        id, prefix, number_format, start_number, date_format, currency,
+        default_tax_percent, default_discount, default_notes,
+        signature_text, signer_name, signer_title, footer_text,
+        primary_color, secondary_color, app_name
+      ) VALUES (
+        1,
+        'INV',
+        'INV/{YYYY}/{MM}/{NUMBER}',
+        1,
+        'DD/MM/YYYY',
+        'IDR',
+        11.0,
+        0,
+        '1. Pembayaran jatuh tempo 14 hari sejak tanggal invoice diterbitkan.\n2. Pembayaran ditransfer ke rekening resmi atas nama Info Papandayan.\n3. Harap menyertakan nomor invoice pada kolom berita transfer.',
+        'Hormat Kami,',
+        'Mohamad Rizal',
+        'Direktur Operasional Info Papandayan',
+        'Invoice ini diterbitkan secara sah melalui Sistem Invoice & Manajemen Barang Info Papandayan.',
+        '#136239',
+        '#7ba892',
+        'Sistem Invoice & Logistik - Info Papandayan'
+      );
+    `);
+  } else {
+    db.run(`
+      UPDATE invoice_settings
+      SET signer_name = 'Mohamad Rizal',
+          signer_title = 'Direktur Operasional Info Papandayan',
+          primary_color = '#136239',
+          secondary_color = '#7ba892',
+          app_name = 'Sistem Invoice & Logistik - Info Papandayan'
+      WHERE id = 1;
+    `);
+  }
+
+  // Seed categories if empty
+  const catCheck = db.exec('SELECT COUNT(*) as cnt FROM categories;');
+  const catCount = (catCheck[0]?.values[0]?.[0] as number) || 0;
+  if (catCount === 0) {
+    db.run(`
+      INSERT INTO categories (id, name, description) VALUES
+      (1, 'Elektronik & IT', 'Perangkat keras komputer, server, dan aksesoris teknologi'),
+      (2, 'Perangkat Jaringan', 'Router, switch, access point, dan kabel LAN'),
+      (3, 'ATK & Kantor', 'Peralatan tulis, kertas, dan perlengkapan administrasi'),
+      (4, 'Furnitur Kantor', 'Meja, kursi ergonomis, dan lemari arsip'),
+      (5, 'Konsumabel & Tinta', 'Toner printer, cartridge, dan consumable printing');
+    `);
+  }
+
+  // Seed products if empty
+  const prodCheck = db.exec('SELECT COUNT(*) as cnt FROM products;');
+  const prodCount = (prodCheck[0]?.values[0]?.[0] as number) || 0;
+  if (prodCount === 0) {
+    db.run(`
+      INSERT INTO products (id, code, name, category_id, unit, price, stock, status, description) VALUES
+      (1, 'PRD-001', 'Laptop Asus ExpertBook B1400 14" i5 16GB/512GB', 1, 'Unit', 12500000, 18, 'active', 'Laptop bisnis tangguh spesifikasi Intel Core i5 gen 11'),
+      (2, 'PRD-002', 'Monitor Dell Professional 24" P2422H IPS FHD', 1, 'Unit', 2750000, 32, 'active', 'Monitor kantor bezel tipis height adjustable'),
+      (3, 'PRD-003', 'Wireless Router Mikrotik RB4011iGS+RM Gigabit', 2, 'Unit', 3600000, 14, 'active', 'Routerboard rackmount 10x Gigabit & 1x SFP+ 10Gbps'),
+      (4, 'PRD-004', 'Managed Switch Cisco Catalyst CBS250 24-Port GE PoE', 2, 'Unit', 8900000, 8, 'active', 'Switch manageable PoE+ 24 Port Gigabit'),
+      (5, 'PRD-005', 'Kabel UTP Cat6 Belden Original 305 Meter', 2, 'Roll', 2450000, 25, 'active', 'Kabel LAN indoor original 1000ft'),
+      (6, 'PRD-006', 'Kertas HVS PaperOne A4 80gr 1 Dus (5 Rim)', 3, 'Box', 285000, 85, 'active', 'Kertas cetak premium ultra white 80 gsm'),
+      (7, 'PRD-007', 'Kursi Kerja Ergonomis Indachi Lumbar Support', 4, 'Unit', 1650000, 20, 'active', 'Kursi kantor hidrolik sandaran jaring breathable'),
+      (8, 'PRD-008', 'Toner HP LaserJet Original 85A (CE285A) Black', 5, 'Pcs', 980000, 40, 'active', 'Cartridge toner original HP untuk printer LaserJet Pro P1102'),
+      (9, 'PRD-009', 'UPS APC Smart-UPS 1500VA LCD 230V SMT1500I', 1, 'Unit', 8400000, 9, 'active', 'Cadangan daya murni sinus untuk rack/server penting'),
+      (10, 'PRD-010', 'Printer Laser Brother Multifungsi DCP-L2540DW', 1, 'Unit', 3200000, 15, 'active', 'Printer laser hitam putih print scan copy wifi network');
+    `);
+  }
+
+  // Seed customers if empty
+  const custCheck = db.exec('SELECT COUNT(*) as cnt FROM customers;');
+  const custCount = (custCheck[0]?.values[0]?.[0] as number) || 0;
+  if (custCount === 0) {
+    db.run(`
+      INSERT INTO customers (id, name, address, phone, email, notes) VALUES
+      (1, 'PT Megah Karya Nusantara', 'Wisma BNI 46 Lt. 18, Jl. Jend. Sudirman Kav. 1, Jakarta Pusat', '021-5748899', 'procurement@megahkarya.co.id', 'Klien korporat langganan kontrak IT maintenance bulanan'),
+      (2, 'CV Mitra Mandiri Solusindo', 'Ruko Sentra Niaga Blok B No. 12, Jl. Pemuda, Surabaya', '031-8499211', 'finance@mitramandiri.com', 'Distributor partner regional Jawa Timur'),
+      (3, 'Dinas Komunikasi & Informatika', 'Jl. Merdeka Barat No. 8, Bandung, Jawa Barat', '022-4239871', 'diskominfo.pengadaan@prov.go.id', 'Instansi pemerintah daerah - PO pengadaan perangkat keras'),
+      (4, 'PT Indo Finansial Solusi', 'Pacific Place Office Tower Lt. 9, SCBD, Jakarta Selatan', '021-25556789', 'admin.keuangan@indofin.id', 'Fintech startup - pembayaran tempo 30 hari'),
+      (5, 'Yayasan Pendidikan Harapan Bangsa', 'Jl. Raya Pajajaran No. 45, Bogor', '0251-8321098', 'yayasan@harapanbangsa.ac.id', 'Pengadaan laboratorium komputer dan sarana kelas');
+    `);
+  }
+
+  // Seed sample invoices and items if empty
+  const invCheck = db.exec('SELECT COUNT(*) as cnt FROM invoices;');
+  const invCount = (invCheck[0]?.values[0]?.[0] as number) || 0;
+  if (invCount === 0) {
+    const curYear = new Date().getFullYear();
+    const curMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+
+    // Invoice 1
+    db.run(`
+      INSERT INTO invoices (
+        id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+        activity_date, due_date, bank_account_no, bank_name, bank_account_name,
+        notes, subtotal, discount_type, discount_rate, discount_amount,
+        tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
+      ) VALUES (
+        1,
+        'INV/${curYear}/${curMonth}/0001',
+        1,
+        'PT Megah Karya Nusantara',
+        'Wisma BNI 46 Lt. 18, Jl. Jend. Sudirman Kav. 1, Jakarta Pusat',
+        '021-5748899',
+        '${curYear}-${curMonth}-02',
+        '${curYear}-${curMonth}-16',
+        '123-00-0987654-3',
+        'Bank Mandiri KCP Jakarta Senayan',
+        'PT GLOBAL SOLUSI NIAGA',
+        'Pengadaan perangkat IT dan jaringan untuk lantai 18.',
+        37500000,
+        'percent',
+        5,
+        1875000,
+        11,
+        3918750,
+        39543750,
+        'paid',
+        1,
+        '${curYear}-${curMonth}-02 10:15:00'
+      );
+    `);
+
+    db.run(`
+      INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
+      (1, 1, 'PRD-001', 'Laptop Asus ExpertBook B1400 14" i5 16GB/512GB', 2, 'Unit', 12500000, 25000000),
+      (1, 4, 'PRD-004', 'Managed Switch Cisco Catalyst CBS250 24-Port GE PoE', 1, 'Unit', 8900000, 8900000),
+      (1, 3, 'PRD-003', 'Wireless Router Mikrotik RB4011iGS+RM Gigabit', 1, 'Unit', 3600000, 3600000);
+    `);
+
+    // Invoice 2
+    db.run(`
+      INSERT INTO invoices (
+        id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+        activity_date, due_date, bank_account_no, bank_name, bank_account_name,
+        notes, subtotal, discount_type, discount_rate, discount_amount,
+        tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
+      ) VALUES (
+        2,
+        'INV/${curYear}/${curMonth}/0002',
+        4,
+        'PT Indo Finansial Solusi',
+        'Pacific Place Office Tower Lt. 9, SCBD, Jakarta Selatan',
+        '021-25556789',
+        '${curYear}-${curMonth}-03',
+        '${curYear}-${curMonth}-17',
+        '123-00-0987654-3',
+        'Bank Mandiri KCP Jakarta Senayan',
+        'PT GLOBAL SOLUSI NIAGA',
+        'Perlengkapan monitor display workstation tim engineer.',
+        13750000,
+        'fixed',
+        0,
+        0,
+        11,
+        1512500,
+        15262500,
+        'paid',
+        1,
+        '${curYear}-${curMonth}-03 14:30:00'
+      );
+    `);
+
+    db.run(`
+      INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
+      (2, 2, 'PRD-002', 'Monitor Dell Professional 24" P2422H IPS FHD', 5, 'Unit', 2750000, 13750000);
+    `);
+
+    // Invoice 3
+    db.run(`
+      INSERT INTO invoices (
+        id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+        activity_date, due_date, bank_account_no, bank_name, bank_account_name,
+        notes, subtotal, discount_type, discount_rate, discount_amount,
+        tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
+      ) VALUES (
+        3,
+        'INV/${curYear}/${curMonth}/0003',
+        2,
+        'CV Mitra Mandiri Solusindo',
+        'Ruko Sentra Niaga Blok B No. 12, Jl. Pemuda, Surabaya',
+        '031-8499211',
+        '${curYear}-${curMonth}-04',
+        '${curYear}-${curMonth}-20',
+        '123-00-0987654-3',
+        'Bank Mandiri KCP Jakarta Senayan',
+        'PT GLOBAL SOLUSI NIAGA',
+        'Order roll kabel UTP dan consumable toner printer.',
+        11720000,
+        'fixed',
+        0,
+        220000,
+        11,
+        1265000,
+        12765000,
+        'pending',
+        2,
+        '${curYear}-${curMonth}-04 09:20:00'
+      );
+    `);
+
+    db.run(`
+      INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
+      (3, 5, 'PRD-005', 'Kabel UTP Cat6 Belden Original 305 Meter', 4, 'Roll', 2450000, 9800000),
+      (3, 8, 'PRD-008', 'Toner HP LaserJet Original 85A (CE285A) Black', 2, 'Pcs', 980000, 1960000);
+    `);
+
+    // Seed activity logs
+    db.run(`
+      INSERT INTO activity_logs (user_id, username, action, details, ip_address, created_at) VALUES
+      (1, 'admin', 'Login', 'Admin masuk ke sistem', '127.0.0.1', '${curYear}-${curMonth}-01 08:30:00'),
+      (1, 'admin', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0001 (PT Megah Karya Nusantara)', '127.0.0.1', '${curYear}-${curMonth}-02 10:15:00'),
+      (1, 'admin', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0002 (PT Indo Finansial Solusi)', '127.0.0.1', '${curYear}-${curMonth}-03 14:30:00'),
+      (2, 'staff', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0003 (CV Mitra Mandiri Solusindo)', '127.0.0.1', '${curYear}-${curMonth}-04 09:20:00');
+    `);
+  }
+}

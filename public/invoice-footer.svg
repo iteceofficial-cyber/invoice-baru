@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 310" width="1200" height="310">
+  <defs>
+    <style>
+      .footer-name { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 800; }
+      .brand-bold { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 800; }
+    </style>
+    <clipPath id="footerClip">
+      <rect x="0" y="0" width="1200" height="310" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#footerClip)">
+    <!-- Clean background -->
+    <rect width="1200" height="310" fill="#ffffff" />
+
+    <!-- LEFT GEOMETRIC BARS -->
+    <!-- Rotated 45 deg geometric bars -->
+    <g transform="translate(180, 160) rotate(-45)">
+      <!-- Main dark green bars -->
+      <rect x="-80" y="-120" width="85" height="480" rx="6" fill="#136239" />
+      <rect x="25" y="-180" width="85" height="480" rx="6" fill="#136239" />
+      <rect x="130" y="-150" width="85" height="420" rx="6" fill="#136239" />
+      <rect x="-185" y="-60" width="85" height="420" rx="6" fill="#136239" />
+      
+      <!-- Sage green accent bars -->
+      <rect x="-20" y="-140" width="38" height="260" rx="4" fill="#8cb9a1" />
+      <rect x="85" y="-120" width="38" height="280" rx="4" fill="#8cb9a1" />
+    </g>
+
+    <!-- HORIZONTAL GREEN BANDS -->
+    <!-- Sage green top stripe -->
+    <rect x="0" y="228" width="1070" height="22" fill="#7ba892" />
+    
+    <!-- Forest green bottom stripe -->
+    <rect x="0" y="250" width="1020" height="50" fill="#136239" />
+
+    <!-- 3 diagonal stripes at the right end of the stripe -->
+    <polygon points="1075,228 1092,228 1060,268 1043,268" fill="#7ba892" />
+    <polygon points="1100,228 1117,228 1085,268 1068,268" fill="#7ba892" />
+    <polygon points="1125,228 1142,228 1110,268 1093,268" fill="#7ba892" />
+
+    <!-- RIGHT SIDE SIGNATURE SECTION -->
+    <g transform="translate(850, 48)">
+      <!-- Signature script stroke -->
+      <path d="M -95 48 C -85 45, -70 42, -55 45 C -40 48, -25 55, -10 52 C 5 48, 12 30, 8 18 C 5 5, -8 2, -18 8 C -26 15, -28 32, -22 45 C -15 58, 0 65, 15 58 C 28 52, 35 35, 32 20 C 30 8, 20 5, 12 12 C 5 20, 2 38, 8 50 C 15 62, 30 65, 45 58 C 58 52, 68 40, 75 32 C 82 25, 90 28, 92 40 L 98 62" 
+            fill="none" stroke="#1f2937" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+
+      <!-- Info Papandayan small logo next to signature -->
+      <g transform="translate(100, 20) scale(0.48)">
+        <!-- info text -->
+        <g fill="#136239">
+          <circle cx="16" cy="4" r="6" fill="#34a853" />
+          <rect x="10" y="18" width="12" height="52" rx="3" />
+          <path d="M 32 32 C 32 23, 40 18, 50 18 C 62 18, 67 25, 67 36 L 67 70 L 55 70 L 55 38 C 55 30, 52 28, 47 28 C 42 28, 44 32, 44 40 L 44 70 L 32 70 Z" />
+          <path d="M 85 14 C 82 14, 78 16, 78 22 L 78 70 L 67 70 L 67 22 C 67 10, 75 4, 88 4 L 92 4 L 92 14 Z" />
+          <rect x="63" y="24" width="28" height="10" rx="2" />
+        </g>
+        <!-- emblem with mountain & pin inside 'o' -->
+        <g transform="translate(146, 44)">
+          <circle cx="0" cy="0" r="38" fill="#136239" />
+          <path d="M -30 18 Q -10 5 0 10 Q 15 15 30 12 Q 35 22 28 28 Q 0 38 -28 24 Z" fill="#1f4d33" />
+          <path d="M -34 2 Q -18 -8 -5 0 Q 10 8 32 -4 Q 38 10 32 18 Q 5 15 -32 12 Z" fill="#2d6e47" />
+          <path d="M -30 -14 Q -12 -25 0 -18 Q 12 -12 28 -20 Q 32 -10 28 -2 Q 8 6 -28 0 Z" fill="#3e8c5d" />
+          <g transform="translate(0, -6)">
+            <path d="M 0 -18 C -9 -18 -15 -11 -15 -2 C -15 8 0 20 0 20 C 0 20 15 8 15 -2 C 15 -11 9 -18 0 -18 Z" fill="#ffffff" />
+            <path d="M 0 -16 C -7 -16 -12 -10 -12 -2 C -12 6 0 16 0 16 C 0 16 12 6 12 -2 C 12 -10 7 -16 0 -16 Z" fill="#34a853" />
+            <circle cx="0" cy="-2" r="5" fill="#ffffff" />
+          </g>
+        </g>
+        <text x="0" y="112" class="brand-bold" font-size="34" fill="#136239">Papandayan</text>
+      </g>
+
+      <!-- Horizontal line under signature -->
+      <line x1="-80" y1="84" x2="160" y2="84" stroke="#4b5563" stroke-width="1.8" />
+
+      <!-- Signer name: Mohamad Rizal -->
+      <text x="40" y="118" class="footer-name" font-size="23" fill="#111827" text-anchor="middle" letter-spacing="0.2">Mohamad Rizal</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,170 @@
+import React, { useState, useEffect } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext.tsx';
+import { ToastProvider } from './context/ToastContext.tsx';
+import { Sidebar, NavTab } from './components/Sidebar.tsx';
+import { Header } from './components/Header.tsx';
+import { LoginView } from './views/LoginView.tsx';
+import { DashboardView } from './views/DashboardView.tsx';
+import { CreateInvoiceView } from './views/CreateInvoiceView.tsx';
+import { InvoicesListView } from './views/InvoicesListView.tsx';
+import { ProductsView } from './views/ProductsView.tsx';
+import { CustomersView } from './views/CustomersView.tsx';
+import { ReportsView } from './views/ReportsView.tsx';
+import { SettingsView } from './views/SettingsView.tsx';
+import { UsersView } from './views/UsersView.tsx';
+import { ActivityLogsView } from './views/ActivityLogsView.tsx';
+import { ChangePasswordView } from './views/ChangePasswordView.tsx';
+import { apiRequest } from './services/api.ts';
+
+function MainAppContent() {
+  const { isAuthenticated, isLoading, isSuperAdmin } = useAuth();
+  const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Cross-view state
+  const [editInvoiceId, setEditInvoiceId] = useState<number | null>(null);
+  const [previewInvoiceId, setPreviewInvoiceId] = useState<number | null>(null);
+
+  // App settings for dynamic header branding
+  const [appName, setAppName] = useState('Info Papandayan - Invoice & Logistik');
+  const [companyName, setCompanyName] = useState('Info Papandayan');
+
+  useEffect(() => {
+    loadBranding();
+  }, [isAuthenticated]);
+
+  const loadBranding = async () => {
+    try {
+      const pubRes = await apiRequest('/api/settings/public');
+      if (pubRes.success && pubRes.data) {
+        if (pubRes.data.app_name) setAppName(pubRes.data.app_name);
+        if (pubRes.data.company_name) setCompanyName(pubRes.data.company_name);
+        return;
+      }
+      if (isAuthenticated) {
+        const invSetRes = await apiRequest('/api/settings/invoice');
+        if (invSetRes.success && invSetRes.data?.app_name) {
+          setAppName(invSetRes.data.app_name);
+        }
+        const compRes = await apiRequest('/api/settings/company');
+        if (compRes.success && compRes.data?.company_name) {
+          setCompanyName(compRes.data.company_name);
+        }
+      }
+    } catch (e) {
+      // Keep default fallback branding
+    }
+  };
+
+  // If loading authentication state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white space-y-4">
+        <div className="w-10 h-10 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm font-semibold text-slate-300">Memuat Sistem Invoice & Logistik...</p>
+      </div>
+    );
+  }
+
+  // If not logged in, show Login page
+  if (!isAuthenticated) {
+    return <LoginView />;
+  }
+
+  // Navigation handlers with clean state reset
+  const handleNavigate = (tab: NavTab) => {
+    if (tab !== 'create-invoice') {
+      setEditInvoiceId(null);
+    }
+    setCurrentTab(tab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleEditInvoice = (id: number) => {
+    setEditInvoiceId(id);
+    setCurrentTab('create-invoice');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handlePreviewInvoice = (id: number) => {
+    setPreviewInvoiceId(id);
+    setCurrentTab('invoices');
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex">
+      {/* Sidebar */}
+      <Sidebar
+        currentTab={currentTab}
+        setCurrentTab={handleNavigate}
+        isOpen={isMobileMenuOpen}
+        onClose={() => setIsMobileMenuOpen(false)}
+        appName={appName}
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 lg:pl-72 transition-all">
+        {/* Header */}
+        <Header
+          onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
+          currentTab={currentTab}
+          onNavigate={handleNavigate}
+          companyName={companyName}
+        />
+
+        {/* View Router */}
+        <main className="flex-1 pb-16">
+          {currentTab === 'dashboard' && (
+            <DashboardView
+              onNavigate={handleNavigate}
+              onPreviewInvoice={handlePreviewInvoice}
+            />
+          )}
+
+          {currentTab === 'create-invoice' && (
+            <CreateInvoiceView
+              onNavigate={handleNavigate}
+              editInvoiceId={editInvoiceId}
+              onClearEdit={() => setEditInvoiceId(null)}
+            />
+          )}
+
+          {currentTab === 'invoices' && (
+            <InvoicesListView
+              onNavigate={handleNavigate}
+              onEditInvoice={handleEditInvoice}
+              previewInvoiceId={previewInvoiceId}
+              onClearPreview={() => setPreviewInvoiceId(null)}
+            />
+          )}
+
+          {currentTab === 'products' && <ProductsView />}
+
+          {currentTab === 'customers' && <CustomersView />}
+
+          {currentTab === 'reports' && <ReportsView />}
+
+          {currentTab === 'settings' && <SettingsView />}
+
+          {currentTab === 'change-password' && <ChangePasswordView />}
+
+          {currentTab === 'users' && (
+            isSuperAdmin ? <UsersView /> : <DashboardView onNavigate={handleNavigate} onPreviewInvoice={handlePreviewInvoice} />
+          )}
+
+          {currentTab === 'logs' && <ActivityLogsView />}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ToastProvider>
+        <MainAppContent />
+      </ToastProvider>
+    </AuthProvider>
+  );
+}

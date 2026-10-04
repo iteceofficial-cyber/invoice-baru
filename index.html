@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sistem Invoice & Manajemen Barang</title>
+    <meta name="description" content="Sistem web modern untuk manajemen produk, pembuatan invoice, export PDF, laporan barang keluar, dan administrasi bisnis terpadu." />
+    <meta property="og:title" content="Sistem Invoice & Manajemen Barang" />
+    <meta property="og:description" content="Sistem web modern untuk manajemen produk, pembuatan invoice, export PDF, laporan barang keluar, dan administrasi bisnis terpadu." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        if (typeof window !== 'undefined') {
+          // Suppress unhandled promise rejections from WebSockets or external fonts
+          window.addEventListener('unhandledrejection', function(e) {
+            if (e && e.reason && (String(e.reason).includes('WebSocket') || String(e.reason.message || '').includes('WebSocket'))) {
+              e.preventDefault();
+            }
+          });
+          // Suppress global errors triggered by preview proxy WebSocket blocks
+          window.addEventListener('error', function(e) {
+            if (e && (String(e.message || '').includes('WebSocket') || String(e.filename || '').includes('@vite'))) {
+              e.preventDefault();
+              return true;
+            }
+          });
+          // Mock WebSocket to prevent Vite client from throwing connection errors in preview
+          const OriginalWS = window.WebSocket;
+          if (OriginalWS) {
+            window.WebSocket = function(url, protocols) {
+              if (typeof url === 'string' && (url.includes('ais-') || url.includes('run.app') || url.includes('localhost') || url.includes('127.0.0.1'))) {
+                return {
+                  readyState: 3,
+                  CONNECTING: 0,
+                  OPEN: 1,
+                  CLOSING: 2,
+                  CLOSED: 3,
+                  send: function() {},
+                  close: function() {},
+                  addEventListener: function() {},
+                  removeEventListener: function() {},
+                  onopen: null,
+                  onclose: null,
+                  onerror: null,
+                  onmessage: null,
+                };
+              }
+              return new OriginalWS(url, protocols);
+            };
+            window.WebSocket.prototype = OriginalWS.prototype;
+          }
+        }
+      })();
+    </script>
+  </head>
+  <body class="font-sans antialiased bg-slate-50 text-slate-900 selection:bg-blue-600 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

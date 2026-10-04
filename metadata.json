@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Invoice & Manajemen Barang",
+  "description": "Sistem web modern untuk manajemen produk, pembuatan invoice, export PDF, laporan barang keluar, dan administrasi bisnis terpadu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 310" width="1200" height="310">
+  <defs>
+    <style>
+      .brand-bold { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 800; }
+      .brand-title { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 900; }
+    </style>
+    <clipPath id="headerClip">
+      <rect x="0" y="0" width="1200" height="310" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#headerClip)">
+    <!-- Clean background -->
+    <rect width="1200" height="310" fill="#ffffff" />
+
+    <!-- RIGHT GEOMETRIC ACCENTS -->
+    <!-- Sage green horizontal accent bar -->
+    <rect x="580" y="155" width="620" height="24" fill="#7ba892" />
+    
+    <!-- 3 small diagonal stripes -->
+    <polygon points="635,188 647,188 625,220 613,220" fill="#7ba892" />
+    <polygon points="655,188 667,188 645,220 633,220" fill="#7ba892" />
+    <polygon points="675,188 687,188 665,220 653,220" fill="#7ba892" />
+
+    <!-- Rotated 45 deg geometric bars -->
+    <g transform="translate(920, 110) rotate(-45)">
+      <!-- Main dark green bars -->
+      <rect x="-80" y="-350" width="90" height="520" rx="6" fill="#136239" />
+      <rect x="25" y="-320" width="90" height="480" rx="6" fill="#136239" />
+      <rect x="130" y="-280" width="85" height="420" rx="6" fill="#136239" />
+      <rect x="-185" y="-200" width="90" height="400" rx="6" fill="#136239" />
+      
+      <!-- Sage green accent bars behind/beside -->
+      <rect x="80" y="-120" width="40" height="320" rx="4" fill="#8cb9a1" />
+      <rect x="180" y="-100" width="40" height="280" rx="4" fill="#8cb9a1" />
+    </g>
+
+    <!-- LEFT LOGO & COMPANY INFO -->
+    <!-- Info Papandayan Logo -->
+    <g transform="translate(28, 42)">
+      <!-- 'info' text -->
+      <g fill="#136239">
+        <!-- i -->
+        <circle cx="16" cy="4" r="6" fill="#34a853" />
+        <rect x="10" y="18" width="12" height="52" rx="3" />
+        <!-- n -->
+        <path d="M 32 32 C 32 23, 40 18, 50 18 C 62 18, 67 25, 67 36 L 67 70 L 55 70 L 55 38 C 55 30, 52 28, 47 28 C 42 28, 44 32, 44 40 L 44 70 L 32 70 Z" />
+        <!-- f -->
+        <path d="M 85 14 C 82 14, 78 16, 78 22 L 78 70 L 67 70 L 67 22 C 67 10, 75 4, 88 4 L 92 4 L 92 14 Z" />
+        <rect x="63" y="24" width="28" height="10" rx="2" />
+      </g>
+
+      <!-- emblem with mountain & pin inside 'o' -->
+      <g transform="translate(146, 44)">
+        <circle cx="0" cy="0" r="38" fill="#136239" />
+        <!-- mountain contour lines -->
+        <path d="M -30 18 Q -10 5 0 10 Q 15 15 30 12 Q 35 22 28 28 Q 0 38 -28 24 Z" fill="#1f4d33" />
+        <path d="M -34 2 Q -18 -8 -5 0 Q 10 8 32 -4 Q 38 10 32 18 Q 5 15 -32 12 Z" fill="#2d6e47" />
+        <path d="M -30 -14 Q -12 -25 0 -18 Q 12 -12 28 -20 Q 32 -10 28 -2 Q 8 6 -28 0 Z" fill="#3e8c5d" />
+        <!-- pin marker in center -->
+        <g transform="translate(0, -6)">
+          <path d="M 0 -18 C -9 -18 -15 -11 -15 -2 C -15 8 0 20 0 20 C 0 20 15 8 15 -2 C 15 -11 9 -18 0 -18 Z" fill="#ffffff" />
+          <path d="M 0 -16 C -7 -16 -12 -10 -12 -2 C -12 6 0 16 0 16 C 0 16 12 6 12 -2 C 12 -10 7 -16 0 -16 Z" fill="#34a853" />
+          <circle cx="0" cy="-2" r="5" fill="#ffffff" />
+        </g>
+      </g>
+
+      <!-- Papandayan text -->
+      <text x="0" y="112" class="brand-bold" font-size="34" fill="#136239" letter-spacing="-0.5">Papandayan</text>
+    </g>
+
+    <!-- Company Details Text -->
+    <g transform="translate(242, 68)">
+      <text x="0" y="0" class="brand-title" font-size="14.5" fill="#136239" letter-spacing="0.5">INFORMASI LENGKAP, WISATA TANPA RAGU</text>
+      <text x="0" y="24" class="brand-bold" font-size="13.5" fill="#136239">
+        WhatsApp : <tspan font-weight="700">+62 822-4063-0123 / +62 813-2127-3552</tspan>
+      </text>
+      <text x="0" y="46" class="brand-bold" font-size="13.5" fill="#136239">
+        Instagram : <tspan font-weight="700">Info_papandayangarut</tspan> <tspan dx="15">Tiktok : </tspan><tspan font-weight="700">info_papandayan</tspan>
+      </text>
+      <text x="0" y="68" class="brand-bold" font-size="13" fill="#136239">
+        Office : <tspan font-weight="700">Jl. Kawah Papandayan, Karamat Wangi, Kec. Cisurupan, Kab.Garut</tspan>
+      </text>
+    </g>
+
+    <!-- Horizontal green divider bar with angled cut -->
+    <polygon points="0,178 615,178 595,186 0,186" fill="#136239" />
+
+    <!-- INVOICE Badge Box -->
+    <g transform="translate(112, 240)">
+      <rect x="0" y="0" width="250" height="54" rx="3" fill="#136239" />
+      <text x="125" y="38" class="brand-title" font-size="34" fill="#ffffff" text-anchor="middle" letter-spacing="1">INVOICE</text>
+    </g>
+  </g>
+</svg>
