@@ -126,37 +126,6 @@ export const LoginView: React.FC = () => {
                 </>
               )}
             </button>
-
-            {/* Quick Demo Login Preset Buttons for easy online share access */}
-            <div className="pt-4 mt-2 border-t border-emerald-900/50">
-              <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider text-center mb-2.5">
-                Akses Cepat Akun Demo (Online Preview):
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUsername('admin');
-                    setPassword('admin123');
-                  }}
-                  className="px-3 py-2.5 rounded-xl bg-[#136239]/30 hover:bg-[#136239]/50 active:bg-[#136239]/70 text-xs font-medium text-emerald-100 border border-emerald-700/50 transition cursor-pointer text-center"
-                >
-                  <span className="font-bold text-emerald-300 block">Super Admin</span>
-                  <span className="text-[10px] text-emerald-200/60 font-mono">admin / admin123</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUsername('staff');
-                    setPassword('staff123');
-                  }}
-                  className="px-3 py-2.5 rounded-xl bg-[#136239]/20 hover:bg-[#136239]/40 active:bg-[#136239]/60 text-xs font-medium text-emerald-100 border border-emerald-800/40 transition cursor-pointer text-center"
-                >
-                  <span className="font-bold text-[#7ba892] block">Staff Admin</span>
-                  <span className="text-[10px] text-emerald-200/60 font-mono">staff / staff123</span>
-                </button>
-              </div>
-            </div>
           </form>
         </div>
 

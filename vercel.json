@@ -3,6 +3,11 @@
   "installCommand": "npm install --legacy-peer-deps",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "node_modules/sql.js/dist/sql-wasm.wasm"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

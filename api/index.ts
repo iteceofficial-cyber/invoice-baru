@@ -9,17 +9,22 @@ app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
 // Initialize DB before handling requests
-let dbInitialized = false;
-app.use(async (_req, _res, next) => {
-  if (!dbInitialized) {
-    try {
-      await getDb();
-      dbInitialized = true;
-    } catch (e) {
-      console.error('[Vercel Serverless] Failed to initialize database:', e);
+let dbInitPromise: Promise<any> | null = null;
+app.use(async (_req, res, next) => {
+  try {
+    if (!dbInitPromise) {
+      dbInitPromise = getDb();
     }
+    await dbInitPromise;
+    next();
+  } catch (e: any) {
+    console.error('[Vercel Serverless] Failed to initialize database:', e);
+    dbInitPromise = null;
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal menginisialisasi basis data server: ' + (e?.message || String(e)),
+    });
   }
-  next();
 });
 
 // Favicon redirect
@@ -41,6 +46,15 @@ app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: `Endpoint API tidak ditemukan: ${req.method} ${req.originalUrl || req.url}`,
+  });
+});
+
+// Global error handler (guarantees all errors return JSON instead of HTML)
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[API Server Error]:', err);
+  res.status(500).json({
+    success: false,
+    message: err?.message || 'Terjadi kesalahan pada backend server',
   });
 });
 

@@ -3,12 +3,42 @@ import type { Database, QueryExecResult } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 let dbInstance: Database | null = null;
 const isVercel = !!process.env.VERCEL;
 const DATA_DIR = isVercel ? '/tmp/data' : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.sqlite');
 const SEED_FILE = path.resolve(process.cwd(), 'data', 'database.sqlite');
+
+function getWasmBinary(): Buffer | undefined {
+  const attempts = [
+    () => {
+      const p = require.resolve('sql.js/dist/sql-wasm.wasm');
+      return fs.existsSync(p) ? fs.readFileSync(p) : undefined;
+    },
+    () => {
+      const p = path.resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm');
+      return fs.existsSync(p) ? fs.readFileSync(p) : undefined;
+    },
+    () => {
+      const p = path.resolve(process.cwd(), 'sql-wasm.wasm');
+      return fs.existsSync(p) ? fs.readFileSync(p) : undefined;
+    },
+  ];
+
+  for (const fn of attempts) {
+    try {
+      const buf = fn();
+      if (buf) return buf;
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+}
 
 export async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance;
@@ -21,7 +51,21 @@ export async function getDb(): Promise<Database> {
     console.warn('[Database] Could not create DATA_DIR, will use in-memory SQLite:', err);
   }
 
-  const SQL = await initSqlJs();
+  const wasmBuffer = getWasmBinary();
+  const wasmBinary: ArrayBuffer | undefined = wasmBuffer
+    ? (wasmBuffer.buffer.slice(wasmBuffer.byteOffset, wasmBuffer.byteOffset + wasmBuffer.byteLength) as ArrayBuffer)
+    : undefined;
+
+  const SQL = await initSqlJs({
+    locateFile: (file) => {
+      try {
+        return require.resolve(`sql.js/dist/${file}`);
+      } catch {
+        return path.resolve(process.cwd(), 'node_modules/sql.js/dist', file);
+      }
+    },
+    ...(wasmBinary ? { wasmBinary } : {}),
+  });
 
   // If on Vercel and seed file exists, copy seed file to writable /tmp
   if (isVercel && fs.existsSync(SEED_FILE) && !fs.existsSync(DB_FILE)) {
