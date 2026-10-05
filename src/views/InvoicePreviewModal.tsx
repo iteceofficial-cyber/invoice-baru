@@ -383,9 +383,18 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                       </span>
                       {(() => {
                         let activePaymentMethods: PaymentMethodItem[] = [];
-                        if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
-                          activePaymentMethods = data.payment_methods.filter((m) => m && m.is_active);
-                        } else if (data.settings?.payment_methods) {
+                        if (data.payment_methods) {
+                          try {
+                            const parsed =
+                              typeof data.payment_methods === 'string'
+                                ? JSON.parse(data.payment_methods)
+                                : data.payment_methods;
+                            if (Array.isArray(parsed)) {
+                              activePaymentMethods = parsed.filter((m: any) => m && m.is_active);
+                            }
+                          } catch {}
+                        }
+                        if (activePaymentMethods.length === 0 && data.settings?.payment_methods) {
                           try {
                             const parsed =
                               typeof data.settings.payment_methods === 'string'
@@ -397,12 +406,41 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                           } catch {}
                         }
 
+                        // If custom invoice bank exists and not in active list
+                        if (data.bank_name && data.bank_account_no && data.bank_account_no !== '123-00-0987654-3') {
+                          const exists = activePaymentMethods.some(
+                            (m) => m.account_no === data.bank_account_no || m.account_no?.replace(/\D/g, '') === data.bank_account_no?.replace(/\D/g, '')
+                          );
+                          if (!exists) {
+                            activePaymentMethods.unshift({
+                              id: 'inv-custom',
+                              name: data.bank_name,
+                              category: 'bank',
+                              account_no: data.bank_account_no,
+                              account_name: data.bank_account_name || 'Info Papandayan',
+                              notes: '',
+                              is_active: true,
+                            });
+                          }
+                        }
+
                         if (activePaymentMethods.length > 0) {
                           return activePaymentMethods.map((m) => (
-                            <div key={m.id} className="border-b border-slate-200/60 last:border-0 pb-1 last:pb-0">
-                              <span className="font-bold text-slate-800">{m.name}: </span>
-                              <span className="font-mono font-semibold text-slate-900">{m.account_no}</span>
-                              <span className="text-slate-600 text-[11px]"> ({m.account_name})</span>
+                            <div key={m.id} className="border-b border-slate-200/60 last:border-0 pb-1.5 last:pb-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-slate-900">{m.name}</span>
+                                <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
+                                  m.category === 'qris' ? 'bg-purple-100 text-purple-800' : m.category === 'cash' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                                }`}>
+                                  {m.category === 'qris' ? 'QRIS' : m.category === 'cash' ? 'Tunai' : 'Transfer'}
+                                </span>
+                              </div>
+                              <div className="text-slate-700 font-mono text-[11px] font-bold">
+                                {m.category === 'cash' ? (m.notes || 'Kasir Kantor Operasional') : m.account_no}
+                              </div>
+                              <div className="text-slate-500 text-[10px]">
+                                a.n. {m.account_name} {m.notes && m.category !== 'cash' ? `• ${m.notes}` : ''}
+                              </div>
                             </div>
                           ));
                         }
@@ -416,7 +454,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                               No. Rek : {data.bank_account_no || '131-00-1849201-8'}
                             </p>
                             <p className="text-slate-600">
-                              Atas Nama: {data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}
+                              Atas Nama: {data.bank_account_name || 'Info Papandayan'}
                             </p>
                           </>
                         );

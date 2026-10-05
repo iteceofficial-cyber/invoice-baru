@@ -213,7 +213,18 @@ export async function checkAndSyncFromFirestore(): Promise<void> {
     if (!metaSnap.exists()) return;
     const meta = metaSnap.data();
     const cloudVersion = meta?.version || 0;
-    if (cloudVersion > currentDbVersion) {
+
+    const localFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+    let localMtime = 0;
+    if (localFile) {
+      try {
+        localMtime = fs.statSync(localFile).mtimeMs;
+      } catch {}
+    }
+    const minRequiredVersion = Math.max(currentDbVersion, localMtime);
+
+    // Only update from cloud if cloud is genuinely newer than local disk file and current state
+    if (cloudVersion > minRequiredVersion) {
       const cloudBuffer = await loadFromFirestore();
       if (cloudBuffer && sqlJsEngine) {
         try {
@@ -396,6 +407,10 @@ export async function getDb(): Promise<Database> {
       const check = testDb.exec('PRAGMA integrity_check;');
       if (check[0]?.values[0]?.[0] === 'ok') {
         dbInstance = testDb;
+        try {
+          const stat = fs.statSync(targetFile);
+          currentDbVersion = Math.max(currentDbVersion, stat.mtimeMs);
+        } catch {}
         console.log('[Database] Menggunakan basis data lokal terverifikasi sehat:', targetFile);
       }
     } catch (err) {
@@ -452,6 +467,7 @@ export function saveDb() {
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
     fs.writeFileSync(DB_FILE, buffer);
+    currentDbVersion = Date.now();
   } catch (err) {
     console.warn('[Database] Warning: Could not write to disk, changes preserved in memory:', err);
   }
@@ -696,6 +712,9 @@ function initSchemaAndSeed(db: Database) {
   try {
     db.run(`ALTER TABLE invoice_settings ADD COLUMN public_app_url TEXT;`);
   } catch (e) {}
+  try {
+    db.run(`ALTER TABLE invoices ADD COLUMN payment_methods TEXT;`);
+  } catch (e) {}
 
   // Update existing template to include {link_pdf} if not already present
   try {
@@ -891,9 +910,9 @@ function initSchemaAndSeed(db: Database) {
         '021-5748899',
         '${curYear}-${curMonth}-02',
         '${curYear}-${curMonth}-16',
-        '123-00-0987654-3',
-        'Bank Mandiri KCP Jakarta Senayan',
-        'PT GLOBAL SOLUSI NIAGA',
+        '131-00-1849201-8',
+        'Bank Mandiri KCP Garut',
+        'Info Papandayan',
         'Pengadaan perangkat IT dan jaringan untuk lantai 18.',
         37500000,
         'percent',
@@ -931,9 +950,9 @@ function initSchemaAndSeed(db: Database) {
         '021-25556789',
         '${curYear}-${curMonth}-03',
         '${curYear}-${curMonth}-17',
-        '123-00-0987654-3',
-        'Bank Mandiri KCP Jakarta Senayan',
-        'PT GLOBAL SOLUSI NIAGA',
+        '131-00-1849201-8',
+        'Bank Mandiri KCP Garut',
+        'Info Papandayan',
         'Perlengkapan monitor display workstation tim engineer.',
         13750000,
         'fixed',
@@ -969,9 +988,9 @@ function initSchemaAndSeed(db: Database) {
         '031-8499211',
         '${curYear}-${curMonth}-04',
         '${curYear}-${curMonth}-20',
-        '123-00-0987654-3',
-        'Bank Mandiri KCP Jakarta Senayan',
-        'PT GLOBAL SOLUSI NIAGA',
+        '131-00-1849201-8',
+        'Bank Mandiri KCP Garut',
+        'Info Papandayan',
         'Order roll kabel UTP dan consumable toner printer.',
         11720000,
         'fixed',

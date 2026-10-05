@@ -190,21 +190,51 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
   }
 
   const activeMethods: PaymentMethodItem[] = (() => {
-    if (Array.isArray(invoiceData.payment_methods) && invoiceData.payment_methods.length > 0) {
-      return invoiceData.payment_methods.filter((m) => m.is_active);
+    let list: PaymentMethodItem[] = [];
+    if (invoiceData.payment_methods) {
+      try {
+        const parsed =
+          typeof invoiceData.payment_methods === 'string'
+            ? JSON.parse(invoiceData.payment_methods)
+            : invoiceData.payment_methods;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          list = parsed.filter((m: any) => m && m.is_active);
+        }
+      } catch {}
     }
-    if (invoiceData.settings?.payment_methods) {
+    if (list.length === 0 && invoiceData.settings?.payment_methods) {
       try {
         const parsed =
           typeof invoiceData.settings.payment_methods === 'string'
             ? JSON.parse(invoiceData.settings.payment_methods)
             : invoiceData.settings.payment_methods;
-        return (parsed || []).filter((m: any) => m.is_active);
+        if (Array.isArray(parsed)) {
+          list = (parsed || []).filter((m: any) => m && m.is_active);
+        }
       } catch {
-        return [];
+        list = [];
       }
     }
-    return [];
+
+    if (invoiceData.bank_name && invoiceData.bank_account_no && invoiceData.bank_account_no !== '123-00-0987654-3') {
+      const cleanAcc = (invoiceData.bank_account_no || '').replace(/\D/g, '');
+      const exists = list.some(
+        (m) => m.account_no === invoiceData.bank_account_no || (m.account_no && m.account_no.replace(/\D/g, '') === cleanAcc)
+      );
+      if (!exists) {
+        list.unshift({
+          id: 'inv-custom',
+          name: invoiceData.bank_name,
+          category: 'bank',
+          account_no: invoiceData.bank_account_no,
+          account_name: invoiceData.bank_account_name || 'Info Papandayan',
+          notes: '',
+          is_active: true,
+        });
+      }
+    }
+
+    return list;
   })();
 
   const isPaid = invoiceData.status === 'paid';

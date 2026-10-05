@@ -660,49 +660,86 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
   const splitTerbilang = doc.splitTextToSize(`"${terbilangText}"`, 103);
   doc.text(splitTerbilang, margin + 3.5, finalY + 8.5);
 
-  doc.setFillColor(240, 253, 244);
-  doc.roundedRect(margin, finalY + 15, 110, 20, 1.5, 1.5, 'F');
-  doc.setDrawColor(187, 247, 208);
-  doc.roundedRect(margin, finalY + 15, 110, 20, 1.5, 1.5, 'S');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
-  doc.setTextColor(71, 85, 105);
-  doc.text('PEMBAYARAN RESMI DITRANSFER KE:', margin + 3.5, finalY + 18);
-
   let activeMethodsBlob: PaymentMethodItem[] = [];
-  if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
-    activeMethodsBlob = data.payment_methods.filter((m) => m.is_active);
-  } else if (data.settings?.payment_methods) {
+  // Prefer active methods in data.payment_methods or data.settings?.payment_methods
+  if (data.payment_methods) {
+    try {
+      const parsed = typeof data.payment_methods === 'string'
+        ? JSON.parse(data.payment_methods)
+        : data.payment_methods;
+      if (Array.isArray(parsed)) {
+        activeMethodsBlob = parsed.filter((m: any) => m && m.is_active);
+      }
+    } catch {}
+  }
+  if (activeMethodsBlob.length === 0 && data.settings?.payment_methods) {
     try {
       const parsed = typeof data.settings.payment_methods === 'string'
         ? JSON.parse(data.settings.payment_methods)
         : data.settings.payment_methods;
-      activeMethodsBlob = (parsed || []).filter((m: any) => m.is_active);
+      if (Array.isArray(parsed)) {
+        activeMethodsBlob = (parsed || []).filter((m: any) => m && m.is_active);
+      }
     } catch {}
   }
+
+  // If specific invoice bank was entered and not dummy and not in list, prepend
+  if (data.bank_name && data.bank_account_no) {
+    const isDummy = data.bank_account_no === '123-00-0987654-3' || data.bank_name === 'Bank Mandiri KCP Jakarta Senayan';
+    if (!isDummy) {
+      const cleanAcc = (data.bank_account_no || '').replace(/\D/g, '');
+      const exists = activeMethodsBlob.some(
+        (m) => m.account_no === data.bank_account_no || (m.account_no && m.account_no.replace(/\D/g, '') === cleanAcc)
+      );
+      if (!exists) {
+        activeMethodsBlob.unshift({
+          id: 'inv-custom',
+          name: data.bank_name,
+          category: 'bank',
+          account_no: data.bank_account_no,
+          account_name: data.bank_account_name || 'Info Papandayan',
+          notes: '',
+          is_active: true,
+        });
+      }
+    }
+  }
+
+  const renderCount = Math.max(1, Math.min(activeMethodsBlob.length, 5));
+  const payBoxHeight = Math.min(36, 9 + renderCount * 5.0);
+
+  doc.setFillColor(240, 253, 244);
+  doc.roundedRect(margin, finalY + 15, 110, payBoxHeight, 1.5, 1.5, 'F');
+  doc.setDrawColor(187, 247, 208);
+  doc.roundedRect(margin, finalY + 15, 110, payBoxHeight, 1.5, 1.5, 'S');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text('PEMBAYARAN RESMI DITRANSFER KE:', margin + 3.5, finalY + 18.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(15, 23, 42);
 
   if (activeMethodsBlob.length > 0) {
-    let mY = finalY + 22.5;
-    for (let i = 0; i < Math.min(activeMethodsBlob.length, 3); i++) {
+    let mY = finalY + 23;
+    for (let i = 0; i < Math.min(activeMethodsBlob.length, 5); i++) {
       const m = activeMethodsBlob[i];
       doc.setFont('helvetica', 'bold');
       doc.text(`${m.name}:`, margin + 3.5, mY);
       doc.setFont('helvetica', 'normal');
-      const valStr = m.category === 'cash' ? (m.notes || 'Kasir Kantor') : `${m.account_no} (a.n. ${m.account_name})`;
+      const valStr = m.category === 'cash' ? (m.notes || 'Kasir Kantor Operasional') : `${m.account_no} (a.n. ${m.account_name})${m.notes ? ` • ${m.notes}` : ''}`;
       const labelW = doc.getTextWidth(`${m.name}: `);
-      const splitVal = doc.splitTextToSize(valStr, 92 - labelW - 6);
+      const splitVal = doc.splitTextToSize(valStr, 103 - labelW);
       doc.text(splitVal[0] || valStr, margin + 3.5 + labelW, mY);
-      mY += 4.5;
+      mY += 4.8;
     }
   } else {
-    doc.text(`Bank       : ${data.bank_name || 'Bank Mandiri KCP Garut'}`, margin + 3.5, finalY + 23);
-    doc.text(`No. Rek : ${data.bank_account_no || '131-00-1849201-8'}`, margin + 3.5, finalY + 27.5);
-    doc.text(`A.n.        : ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`, margin + 3.5, finalY + 32);
+    const isDummy = data.bank_account_no === '123-00-0987654-3';
+    doc.text(`Bank       : ${!isDummy && data.bank_name ? data.bank_name : 'Bank Mandiri KCP Garut'}`, margin + 3.5, finalY + 23);
+    doc.text(`No. Rek : ${!isDummy && data.bank_account_no ? data.bank_account_no : '131-00-1849201-8'}`, margin + 3.5, finalY + 27.5);
+    doc.text(`A.n.        : ${!isDummy && data.bank_account_name ? data.bank_account_name : 'Info Papandayan'}`, margin + 3.5, finalY + 32);
   }
 
   const sumX = pageWidth - margin - 65;
@@ -793,13 +830,14 @@ export function buildWhatsAppInvoiceMessage(
   let methodsList: PaymentMethodItem[] = [];
   if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
     methodsList = data.payment_methods;
-  } else if (data.settings?.payment_methods) {
+  }
+  if (methodsList.filter((m) => m && m.is_active).length === 0 && data.settings?.payment_methods) {
     try {
       const parsed =
         typeof data.settings.payment_methods === 'string'
           ? JSON.parse(data.settings.payment_methods)
           : data.settings.payment_methods;
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         methodsList = parsed;
       }
     } catch {
@@ -816,13 +854,14 @@ export function buildWhatsAppInvoiceMessage(
           return `• *${m.name}*: ${m.notes || 'Pembayaran langsung di kasir kantor'}`;
         }
         if (m.category === 'qris') {
-          return `• *${m.name}* (${m.account_name}): ${m.account_no}${m.notes ? ` - ${m.notes}` : ''}`;
+          return `• *${m.name}* (${m.account_name}): ${m.account_no}${m.notes ? ` • ${m.notes}` : ''}`;
         }
-        return `• *${m.name}*: ${m.account_no} (a.n. ${m.account_name})${m.notes ? ` - ${m.notes}` : ''}`;
+        return `• *${m.name}*: ${m.account_no} (a.n. ${m.account_name})${m.notes ? ` • ${m.notes}` : ''}`;
       })
       .join('\n');
   } else {
-    paymentText = `Bank: ${data.bank_name || 'Bank Mandiri KCP Garut'}\nNo. Rekening: ${data.bank_account_no || '131-00-1849201-8'}\nAtas Nama: ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`;
+    const isDummy = data.bank_account_no === '123-00-0987654-3';
+    paymentText = `• *${!isDummy && data.bank_name ? data.bank_name : 'Bank Mandiri KCP Garut'}*: ${!isDummy && data.bank_account_no ? data.bank_account_no : '131-00-1849201-8'} (a.n. ${!isDummy && data.bank_account_name ? data.bank_account_name : 'Info Papandayan'})`;
   }
 
   // Generate public download link (interactive web view & direct PDF link)

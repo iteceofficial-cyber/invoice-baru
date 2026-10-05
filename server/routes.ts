@@ -1366,6 +1366,61 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
 // PUBLIC INVOICE RESOLVER & SERVER-SIDE PDF GENERATOR
 // ==========================================
 
+function resolveInvoicePaymentMethods(invoice: any, settings: any, company: any) {
+  let configuredPaymentMethods = DEFAULT_PAYMENT_METHODS;
+  if (settings?.payment_methods) {
+    try {
+      const parsed = typeof settings.payment_methods === 'string' ? JSON.parse(settings.payment_methods) : settings.payment_methods;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        configuredPaymentMethods = parsed;
+      }
+    } catch {}
+  }
+
+  // Active payment methods checked in Pengaturan
+  const activeMethods = configuredPaymentMethods.filter((m: any) => m && m.is_active);
+  let finalMethods = activeMethods.length > 0 ? [...activeMethods] : [...configuredPaymentMethods];
+
+  // If invoice has a custom specific bank entered that is not dummy and not already in active methods, include it at the top
+  if (invoice?.bank_name?.trim() && invoice?.bank_account_no?.trim()) {
+    const cleanInvAcc = invoice.bank_account_no.replace(/\D/g, '');
+    const isDummy = invoice.bank_account_no === '123-00-0987654-3' || invoice.bank_name === 'Bank Mandiri KCP Jakarta Senayan';
+    if (!isDummy) {
+      const isAlreadyPresent = finalMethods.some(
+        (m: any) => (m.account_no && m.account_no.replace(/\D/g, '') === cleanInvAcc) ||
+                    (m.name?.toLowerCase().includes(invoice.bank_name.toLowerCase()) && m.account_no === invoice.bank_account_no)
+      );
+      if (!isAlreadyPresent) {
+        finalMethods.unshift({
+          id: 'custom-inv-bank',
+          name: invoice.bank_name.trim(),
+          category: 'bank',
+          account_no: invoice.bank_account_no.trim(),
+          account_name: invoice.bank_account_name?.trim() || company?.company_name || 'Info Papandayan',
+          notes: '',
+          is_active: true,
+        });
+      }
+    }
+  }
+
+  // Primary active bank
+  const primaryBank = finalMethods.find((m: any) => m.is_active && (m.category === 'bank' || !m.category)) || finalMethods[0];
+  const isInvoiceBankDummy = !invoice?.bank_account_no || invoice.bank_account_no === '123-00-0987654-3' || invoice.bank_name === 'Bank Mandiri KCP Jakarta Senayan';
+
+  const effectiveBankName = !isInvoiceBankDummy ? invoice.bank_name : (primaryBank?.name || company?.bank_name || 'Bank Mandiri KCP Garut');
+  const effectiveBankAcc = !isInvoiceBankDummy ? invoice.bank_account_no : (primaryBank?.account_no || company?.bank_account_no || '131-00-1849201-8');
+  const effectiveBankOwner = !isInvoiceBankDummy ? invoice.bank_account_name : (primaryBank?.account_name || company?.bank_account_name || 'Info Papandayan');
+
+  return {
+    configuredPaymentMethods,
+    finalPaymentMethods: finalMethods,
+    effectiveBankName,
+    effectiveBankAcc,
+    effectiveBankOwner,
+  };
+}
+
 function fetchPublicInvoiceData(rawIdentifier?: string, idParam?: any) {
   let invoice: any = null;
   const rawId = idParam ? Number(idParam) : -1;
@@ -1437,25 +1492,27 @@ function fetchPublicInvoiceData(rawIdentifier?: string, idParam?: any) {
   const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
   const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
 
-  let paymentMethods = DEFAULT_PAYMENT_METHODS;
-  if (settings?.payment_methods) {
-    try {
-      paymentMethods = JSON.parse(settings.payment_methods);
-    } catch {
-      paymentMethods = DEFAULT_PAYMENT_METHODS;
-    }
-  }
+  const {
+    configuredPaymentMethods,
+    finalPaymentMethods,
+    effectiveBankName,
+    effectiveBankAcc,
+    effectiveBankOwner,
+  } = resolveInvoicePaymentMethods(invoice, settings, company);
 
   return {
     ...invoice,
+    bank_name: effectiveBankName,
+    bank_account_no: effectiveBankAcc,
+    bank_account_name: effectiveBankOwner,
     items,
     company,
     settings: {
       ...settings,
       whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
-      payment_methods: paymentMethods,
+      payment_methods: configuredPaymentMethods,
     },
-    payment_methods: paymentMethods,
+    payment_methods: finalPaymentMethods,
   };
 }
 
@@ -1633,13 +1690,31 @@ function generateServerInvoicePdf(data: any): Buffer {
   doc.text(terbilangLines, margin + 3, finalY + 12);
 
   // Left: Payment methods
-  const activeMethods = (data.payment_methods || []).filter((m: any) => m.is_active);
-  let payBoxHeight = Math.min(26, 9 + (activeMethods.length || 1) * 4.5);
+  let activeMethods: any[] = [];
+  if (data.payment_methods) {
+    try {
+      const parsed = typeof data.payment_methods === 'string' ? JSON.parse(data.payment_methods) : data.payment_methods;
+      if (Array.isArray(parsed)) {
+        activeMethods = parsed.filter((m: any) => m && m.is_active);
+      }
+    } catch {}
+  }
+  if (activeMethods.length === 0 && data.settings?.payment_methods) {
+    try {
+      const parsed = typeof data.settings.payment_methods === 'string' ? JSON.parse(data.settings.payment_methods) : data.settings.payment_methods;
+      if (Array.isArray(parsed)) {
+        activeMethods = parsed.filter((m: any) => m && m.is_active);
+      }
+    } catch {}
+  }
+
+  const payCount = Math.max(1, Math.min(activeMethods.length, 5));
+  let payBoxHeight = Math.min(36, 9 + payCount * 5.0);
   doc.setFillColor(248, 250, 252);
-  doc.roundedRect(margin, finalY + 17, 102, payBoxHeight, 1, 1, 'F');
+  doc.roundedRect(margin, finalY + 17, 104, payBoxHeight, 1, 1, 'F');
   doc.setDrawColor(226, 232, 240);
   doc.setLineWidth(0.2);
-  doc.roundedRect(margin, finalY + 17, 102, payBoxHeight, 1, 1, 'S');
+  doc.roundedRect(margin, finalY + 17, 104, payBoxHeight, 1, 1, 'S');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.2);
@@ -1651,12 +1726,25 @@ function generateServerInvoicePdf(data: any): Buffer {
   doc.setTextColor(51, 65, 85);
   let payLineY = finalY + 25;
   if (activeMethods.length > 0) {
-    activeMethods.slice(0, 3).forEach((m: any) => {
-      doc.text(`• ${m.name}: ${m.account_no} (a.n. ${m.account_name})`, margin + 3, payLineY);
-      payLineY += 4.5;
+    activeMethods.slice(0, 5).forEach((m: any) => {
+      let valStr = '';
+      if (m.category === 'cash') {
+        valStr = m.notes || 'Pembayaran langsung di kantor operasional';
+      } else if (m.category === 'qris') {
+        valStr = `${m.account_no} (a.n. ${m.account_name})${m.notes ? ` • ${m.notes}` : ''}`;
+      } else {
+        valStr = `${m.account_no} (a.n. ${m.account_name})${m.notes ? ` • ${m.notes}` : ''}`;
+      }
+      const lineStr = `• ${m.name}: ${valStr}`;
+      const splitText = doc.splitTextToSize(lineStr, 98);
+      doc.text(splitText[0] || lineStr, margin + 3, payLineY);
+      payLineY += 4.8;
     });
   } else {
-    doc.text(`Bank Mandiri: ${data.bank_account_no || '131-00-1849201-8'} (a.n. Info Papandayan)`, margin + 3, payLineY);
+    const bName = data.bank_name || 'Bank Mandiri KCP Garut';
+    const bAcc = data.bank_account_no || '131-00-1849201-8';
+    const bOwner = data.bank_account_name || 'Info Papandayan';
+    doc.text(`• ${bName}: ${bAcc} (a.n. ${bOwner})`, margin + 3, payLineY);
   }
 
   // Right: Summary & Total
@@ -1851,27 +1939,29 @@ apiRouter.get('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
     const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
     const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
 
-    let paymentMethods = DEFAULT_PAYMENT_METHODS;
-    if (settings?.payment_methods) {
-      try {
-        paymentMethods = JSON.parse(settings.payment_methods);
-      } catch {
-        paymentMethods = DEFAULT_PAYMENT_METHODS;
-      }
-    }
+    const {
+      configuredPaymentMethods,
+      finalPaymentMethods,
+      effectiveBankName,
+      effectiveBankAcc,
+      effectiveBankOwner,
+    } = resolveInvoicePaymentMethods(invoice, settings, company);
 
     return res.json({
       success: true,
       data: {
         ...invoice,
+        bank_name: effectiveBankName,
+        bank_account_no: effectiveBankAcc,
+        bank_account_name: effectiveBankOwner,
         items,
         company,
         settings: {
           ...settings,
           whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
-          payment_methods: paymentMethods,
+          payment_methods: configuredPaymentMethods,
         },
-        payment_methods: paymentMethods,
+        payment_methods: finalPaymentMethods,
       },
     });
   } catch (err: any) {
@@ -1899,6 +1989,7 @@ apiRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respon
       tax_percent = 11,
       status = 'paid',
       items,
+      payment_methods,
     } = req.body;
 
     if (!invoice_number || !invoice_number.trim()) {
@@ -2008,11 +2099,34 @@ apiRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respon
     const taxAmount = Math.round((afterDiscount * numTaxPercent) / 100);
     const totalAmount = afterDiscount + taxAmount;
 
+    // Determine payment methods to save on invoice
+    const invSettings = queryOne<any>('SELECT payment_methods FROM invoice_settings WHERE id = 1');
+    let finalPaymentMethodsStr = '';
+    if (payment_methods !== undefined) {
+      if (Array.isArray(payment_methods) && payment_methods.length > 0) {
+        finalPaymentMethodsStr = JSON.stringify(payment_methods);
+      } else if (typeof payment_methods === 'string' && payment_methods.trim().startsWith('[')) {
+        finalPaymentMethodsStr = payment_methods;
+      }
+    }
+    if (!finalPaymentMethodsStr) {
+      finalPaymentMethodsStr = invSettings?.payment_methods || JSON.stringify(DEFAULT_PAYMENT_METHODS);
+    }
+
+    // Determine primary bank from payment methods if bank details were not specifically entered
+    let primaryActiveMethod: any = null;
+    try {
+      const parsedPm = JSON.parse(finalPaymentMethodsStr);
+      if (Array.isArray(parsedPm)) {
+        primaryActiveMethod = parsedPm.find((m: any) => m.is_active && (m.category === 'bank' || !m.category)) || parsedPm.find((m: any) => m.is_active);
+      }
+    } catch {}
+
     // Get company default bank if not provided
     const comp = queryOne<any>('SELECT * FROM company_settings WHERE id = 1');
-    const finalBankAcc = bank_account_no || comp?.bank_account_no || '';
-    const finalBankName = bank_name || comp?.bank_name || '';
-    const finalBankNameOwner = bank_account_name || comp?.bank_account_name || '';
+    const finalBankAcc = (bank_account_no && bank_account_no.trim()) || primaryActiveMethod?.account_no || comp?.bank_account_no || '';
+    const finalBankName = (bank_name && bank_name.trim()) || primaryActiveMethod?.name || comp?.bank_name || '';
+    const finalBankNameOwner = (bank_account_name && bank_account_name.trim()) || primaryActiveMethod?.account_name || comp?.bank_account_name || '';
 
     // Validate customer_id exists to avoid SQLite foreign key constraint failures
     let finalCustomerId: number | null = null;
@@ -2032,8 +2146,8 @@ apiRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respon
         activity_date, due_date, bank_account_no, bank_name, bank_account_name,
         notes, subtotal, discount_type, discount_rate, discount_amount,
         tax_percent, tax_amount, total_amount, status, created_by_user_id,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+        payment_methods, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
       [
         invoice_number.trim(),
         finalCustomerId,
@@ -2055,6 +2169,7 @@ apiRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respon
         totalAmount,
         status,
         req.user?.id || 1,
+        finalPaymentMethodsStr,
       ]
     );
 
@@ -2121,6 +2236,7 @@ apiRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
       tax_percent = 11,
       status,
       items,
+      payment_methods,
     } = req.body;
 
     const existingInv = queryOne<any>('SELECT * FROM invoices WHERE id = ?', [id]);
@@ -2248,13 +2364,22 @@ apiRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
 
     const safeCustomerName = (customer_name && customer_name.trim()) || 'Pelanggan';
 
+    let finalPaymentMethodsStr = existingInv.payment_methods || null;
+    if (payment_methods !== undefined) {
+      if (Array.isArray(payment_methods) && payment_methods.length > 0) {
+        finalPaymentMethodsStr = JSON.stringify(payment_methods);
+      } else if (typeof payment_methods === 'string' && payment_methods.trim().startsWith('[')) {
+        finalPaymentMethodsStr = payment_methods;
+      }
+    }
+
     // Update invoice record
     runQuery(
       `UPDATE invoices
        SET invoice_number = ?, customer_id = ?, customer_name = ?, customer_address = ?, customer_phone = ?,
            activity_date = ?, due_date = ?, bank_account_no = ?, bank_name = ?, bank_account_name = ?,
            notes = ?, subtotal = ?, discount_type = ?, discount_rate = ?, discount_amount = ?,
-           tax_percent = ?, tax_amount = ?, total_amount = ?, status = ?, updated_at = datetime('now', 'localtime')
+           tax_percent = ?, tax_amount = ?, total_amount = ?, status = ?, payment_methods = ?, updated_at = datetime('now', 'localtime')
        WHERE id = ?`,
       [
         invoice_number.trim(),
@@ -2264,9 +2389,9 @@ apiRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
         customer_phone?.trim() || '',
         activity_date,
         due_date || activity_date,
-        bank_account_no || '',
-        bank_name || '',
-        bank_account_name || '',
+        bank_account_no || existingInv.bank_account_no || '',
+        bank_name || existingInv.bank_name || '',
+        bank_account_name || existingInv.bank_account_name || '',
         notes?.trim() || '',
         subtotal,
         discount_type,
@@ -2276,6 +2401,7 @@ apiRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
         taxAmount,
         totalAmount,
         status || existingInv.status,
+        finalPaymentMethodsStr,
         id,
       ]
     );
@@ -2854,6 +2980,11 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
       return res.status(400).json({ success: false, message: 'Nama perusahaan wajib diisi' });
     }
 
+    const currentComp = queryOne<any>('SELECT * FROM company_settings WHERE id = 1');
+    const finalBankAcc = bank_account_no !== undefined ? bank_account_no?.trim() : (currentComp?.bank_account_no || '');
+    const finalBankName = bank_name !== undefined ? bank_name?.trim() : (currentComp?.bank_name || '');
+    const finalBankOwner = bank_account_name !== undefined ? bank_account_name?.trim() : (currentComp?.bank_account_name || '');
+
     runQuery(
       `UPDATE company_settings
        SET company_name = ?, logo_url = ?, address = ?, phone = ?, email = ?, website = ?,
@@ -2866,9 +2997,9 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
         phone?.trim() || '',
         email?.trim() || '',
         website?.trim() || '',
-        bank_account_no?.trim() || '',
-        bank_name?.trim() || '',
-        bank_account_name?.trim() || '',
+        finalBankAcc,
+        finalBankName,
+        finalBankOwner,
       ]
     );
 
@@ -2953,8 +3084,16 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
 
     let finalPaymentMethods = currentSettings?.payment_methods || JSON.stringify(DEFAULT_PAYMENT_METHODS);
     if (payment_methods !== undefined) {
-      finalPaymentMethods =
-        typeof payment_methods === 'string' ? payment_methods : JSON.stringify(payment_methods);
+      if (Array.isArray(payment_methods) && payment_methods.length > 0) {
+        finalPaymentMethods = JSON.stringify(payment_methods);
+      } else if (typeof payment_methods === 'string' && payment_methods.trim().startsWith('[')) {
+        try {
+          const parsed = JSON.parse(payment_methods);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            finalPaymentMethods = payment_methods;
+          }
+        } catch {}
+      }
     }
 
     const finalPublicAppUrl =
@@ -3041,6 +3180,25 @@ apiRouter.put('/settings/payment-methods', requireAuth, (req: AuthenticatedReque
        WHERE id = 1`,
       [jsonStr]
     );
+
+    // Also automatically sync the primary active bank to company_settings and clean up legacy dummy accounts
+    const primaryActiveBank = payment_methods.find((m: any) => m.is_active && (m.category === 'bank' || !m.category)) || payment_methods.find((m: any) => m.is_active);
+    if (primaryActiveBank) {
+      runQuery(
+        `UPDATE company_settings 
+         SET bank_name = ?, bank_account_no = ?, bank_account_name = ?, updated_at = datetime('now', 'localtime')
+         WHERE id = 1`,
+        [primaryActiveBank.name || '', primaryActiveBank.account_no || '', primaryActiveBank.account_name || '']
+      );
+
+      runQuery(
+        `UPDATE invoices
+         SET bank_name = ?, bank_account_no = ?, bank_account_name = ?
+         WHERE bank_account_no = '123-00-0987654-3' OR bank_name = 'Bank Mandiri KCP Jakarta Senayan' OR bank_account_name = 'PT GLOBAL SOLUSI NIAGA'`,
+        [primaryActiveBank.name || '', primaryActiveBank.account_no || '', primaryActiveBank.account_name || '']
+      );
+    }
+
     saveDb();
 
     logActivity(

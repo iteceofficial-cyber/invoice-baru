@@ -240,6 +240,8 @@ export const SettingsView: React.FC = () => {
       method: 'PUT',
       body: JSON.stringify({
         ...invoice,
+        payment_methods: paymentMethods,
+        whatsapp_template: whatsappTemplate,
         header_image_url: invoice.header_image_url,
         footer_image_url: invoice.footer_image_url,
         footer_text: invoice.footer_text,
@@ -283,11 +285,32 @@ export const SettingsView: React.FC = () => {
         setWhatsappTemplate(DEFAULT_WHATSAPP_TEMPLATE);
       }
 
+      let loadedMethods: PaymentMethodItem[] = [];
       if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
-        setPaymentMethods(data.payment_methods);
-      } else {
-        setPaymentMethods(DEFAULT_PAYMENT_METHODS);
+        loadedMethods = [...data.payment_methods];
+      } else if (typeof data.payment_methods === 'string') {
+        try {
+          const parsed = JSON.parse(data.payment_methods);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            loadedMethods = parsed;
+          }
+        } catch {}
       }
+
+      // If loaded methods are missing standard default payment choices (BCA, BRI, QRIS, Cash),
+      // merge missing standard items so user can easily check/uncheck them
+      if (loadedMethods.length > 0) {
+        const existingNames = new Set(loadedMethods.map((m) => (m.name || '').toLowerCase().trim()));
+        for (const def of DEFAULT_PAYMENT_METHODS) {
+          if (!existingNames.has((def.name || '').toLowerCase().trim())) {
+            loadedMethods.push({ ...def, is_active: false });
+          }
+        }
+      } else {
+        loadedMethods = DEFAULT_PAYMENT_METHODS;
+      }
+
+      setPaymentMethods(loadedMethods);
     }
     setLoading(false);
   };
@@ -297,7 +320,14 @@ export const SettingsView: React.FC = () => {
     setSaving(true);
     const res = await apiRequest('/api/settings/company', {
       method: 'PUT',
-      body: JSON.stringify(company),
+      body: JSON.stringify({
+        company_name: company.company_name,
+        logo_url: company.logo_url,
+        address: company.address,
+        phone: company.phone,
+        email: company.email,
+        website: company.website,
+      }),
     });
     setSaving(false);
 
@@ -330,15 +360,19 @@ export const SettingsView: React.FC = () => {
 
   // Payment Methods Handlers
   const handleTogglePaymentMethod = (id: string) => {
-    setPaymentMethods((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, is_active: !m.is_active } : m))
-    );
+    setPaymentMethods((prev) => {
+      const updated = prev.map((m) => (m.id === id ? { ...m, is_active: !m.is_active } : m));
+      setInvoice((inv) => ({ ...inv, payment_methods: updated }));
+      return updated;
+    });
   };
 
   const handleUpdatePaymentMethod = (id: string, field: keyof PaymentMethodItem, value: any) => {
-    setPaymentMethods((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, [field]: value } : m))
-    );
+    setPaymentMethods((prev) => {
+      const updated = prev.map((m) => (m.id === id ? { ...m, [field]: value } : m));
+      setInvoice((inv) => ({ ...inv, payment_methods: updated }));
+      return updated;
+    });
   };
 
   const handleAddPaymentMethod = () => {
@@ -352,7 +386,11 @@ export const SettingsView: React.FC = () => {
       notes: '',
       is_active: true,
     };
-    setPaymentMethods([...paymentMethods, newMethod]);
+    setPaymentMethods((prev) => {
+      const updated = [...prev, newMethod];
+      setInvoice((inv) => ({ ...inv, payment_methods: updated }));
+      return updated;
+    });
     toast.info('Baris metode pembayaran baru ditambahkan. Silakan isi detail rekening dan klik Simpan.');
   };
 
@@ -361,8 +399,18 @@ export const SettingsView: React.FC = () => {
       toast.warning('Minimal harus ada 1 metode pembayaran terdaftar di sistem');
       return;
     }
-    setPaymentMethods((prev) => prev.filter((m) => m.id !== id));
+    setPaymentMethods((prev) => {
+      const updated = prev.filter((m) => m.id !== id);
+      setInvoice((inv) => ({ ...inv, payment_methods: updated }));
+      return updated;
+    });
     toast.info('Metode pembayaran dihapus');
+  };
+
+  const handleRestoreDefaultPaymentMethods = () => {
+    setPaymentMethods(DEFAULT_PAYMENT_METHODS);
+    setInvoice((inv) => ({ ...inv, payment_methods: DEFAULT_PAYMENT_METHODS }));
+    toast.info('Daftar metode pembayaran dikembalikan ke 5 pilihan standar. Klik "Simpan Metode Pembayaran" untuk menerapkan permanen.');
   };
 
   const handleSavePaymentMethods = async () => {
@@ -377,6 +425,14 @@ export const SettingsView: React.FC = () => {
 
     if (res.success) {
       toast.success('Daftar metode pembayaran berhasil disimpan dan diperbarui!');
+      const updatedList = Array.isArray(res.data) ? res.data : paymentMethods;
+      setPaymentMethods(updatedList);
+      setInvoice((prev) => ({ ...prev, payment_methods: updatedList }));
+      // Also sync company profile state
+      const compRes = await apiRequest('/api/settings/company');
+      if (compRes.success && compRes.data) {
+        setCompany(compRes.data);
+      }
     } else {
       // Fallback
       setSaving(true);
@@ -385,11 +441,13 @@ export const SettingsView: React.FC = () => {
         body: JSON.stringify({
           ...invoice,
           payment_methods: paymentMethods,
+          whatsapp_template: whatsappTemplate,
         }),
       });
       setSaving(false);
       if (fallbackRes.success) {
         toast.success('Daftar metode pembayaran berhasil disimpan!');
+        setInvoice((prev) => ({ ...prev, payment_methods: paymentMethods }));
       } else {
         toast.error(fallbackRes.message || res.message || 'Gagal menyimpan metode pembayaran');
       }
@@ -413,6 +471,7 @@ export const SettingsView: React.FC = () => {
       method: 'PUT',
       body: JSON.stringify({
         ...invoice,
+        payment_methods: paymentMethods,
         whatsapp_template: whatsappTemplate,
       }),
     });
@@ -991,14 +1050,25 @@ export const SettingsView: React.FC = () => {
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={handleAddPaymentMethod}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-[#136239] text-xs font-bold transition cursor-pointer self-start sm:self-auto"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Tambah Rekening / Metode</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={handleRestoreDefaultPaymentMethods}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                title="Pulihkan daftar default (Bank Mandiri, BCA, BRI, QRIS, Tunai)"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                <span>Pilihan Standar (5 Metode)</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleAddPaymentMethod}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-[#136239] text-xs font-bold transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Tambah Rekening / Metode</span>
+              </button>
+            </div>
           </div>
 
           <div className="space-y-4">

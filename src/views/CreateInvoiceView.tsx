@@ -75,6 +75,9 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
   const [bankName, setBankName] = useState('');
   const [bankAccountNo, setBankAccountNo] = useState('');
   const [bankAccountName, setBankAccountName] = useState('');
+  const [availablePaymentMethods, setAvailablePaymentMethods] = useState<any[]>([]);
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState<any[]>([]);
+  const [selectedMethodId, setSelectedMethodId] = useState<string>('');
   const [notes, setNotes] = useState('');
   const [status, setStatus] = useState('paid');
 
@@ -149,19 +152,28 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     }
 
     // 3. Settings
+    let loadedMethods: any[] = [];
     const compRes = await apiRequest('/api/settings/company');
     if (compRes.success && compRes.data) {
       setCompanySettings(compRes.data);
-      setBankName(compRes.data.bank_name || '');
-      setBankAccountNo(compRes.data.bank_account_no || '');
-      setBankAccountName(compRes.data.bank_account_name || '');
     }
 
     const setRes = await apiRequest('/api/settings/invoice');
     if (setRes.success && setRes.data) {
       setInvoiceSettings(setRes.data);
       setNotes(setRes.data.default_notes || '');
+      if (Array.isArray(setRes.data.payment_methods)) {
+        loadedMethods = setRes.data.payment_methods;
+      } else if (typeof setRes.data.payment_methods === 'string') {
+        try {
+          loadedMethods = JSON.parse(setRes.data.payment_methods);
+        } catch {}
+      }
     }
+
+    setAvailablePaymentMethods(loadedMethods);
+    const activeMethods = loadedMethods.filter((m: any) => m && m.is_active);
+    setSelectedPaymentMethods(activeMethods);
 
     // If Editing existing invoice
     if (editInvoiceId) {
@@ -182,6 +194,15 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
         setDiscountType(inv.discount_type || 'fixed');
         setDiscountRate(inv.discount_rate || 0);
 
+        if (inv.payment_methods) {
+          try {
+            const parsedPm = typeof inv.payment_methods === 'string' ? JSON.parse(inv.payment_methods) : inv.payment_methods;
+            if (Array.isArray(parsedPm) && parsedPm.length > 0) {
+              setSelectedPaymentMethods(parsedPm);
+            }
+          } catch {}
+        }
+
         setItems(
           inv.items.map((it: any) => ({
             id: it.id,
@@ -197,6 +218,19 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
         );
         return;
       }
+    }
+
+    // New invoice: automatically synchronize with primary active bank from Pengaturan!
+    const primaryActive = activeMethods.find((m: any) => m.category === 'bank' || !m.category) || activeMethods[0];
+    if (primaryActive) {
+      setSelectedMethodId(primaryActive.id);
+      setBankName(primaryActive.name || '');
+      setBankAccountNo(primaryActive.account_no || '');
+      setBankAccountName(primaryActive.account_name || compRes.data?.company_name || 'Info Papandayan');
+    } else if (compRes.success && compRes.data) {
+      setBankName(compRes.data.bank_name || '');
+      setBankAccountNo(compRes.data.bank_account_no || '');
+      setBankAccountName(compRes.data.bank_account_name || '');
     }
 
     // New invoice: generate next invoice number
@@ -431,6 +465,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       bank_account_no: bankAccountNo.trim(),
       bank_name: bankName.trim(),
       bank_account_name: bankAccountName.trim(),
+      payment_methods: selectedPaymentMethods.length > 0 ? selectedPaymentMethods : availablePaymentMethods.filter((m) => m && m.is_active),
       notes: notes.trim(),
       discount_type: discountType,
       discount_rate: discountRate,
@@ -478,7 +513,42 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     }
   };
 
+  const handleSelectPaymentMethod = (method: any) => {
+    setSelectedMethodId(method.id);
+    setBankName(method.name || '');
+    setBankAccountNo(method.account_no || '');
+    setBankAccountName(method.account_name || companySettings?.company_name || 'Info Papandayan');
+    toast.success(`Rekening pembayaran diset ke: ${method.name} (${method.account_no})`);
+  };
+
+  const handleSyncFromSettings = async () => {
+    try {
+      const setRes = await apiRequest('/api/settings/invoice');
+      if (setRes.success && setRes.data?.payment_methods) {
+        let parsed = typeof setRes.data.payment_methods === 'string' ? JSON.parse(setRes.data.payment_methods) : setRes.data.payment_methods;
+        if (Array.isArray(parsed)) {
+          setAvailablePaymentMethods(parsed);
+          const activeOnes = parsed.filter((m: any) => m && m.is_active);
+          setSelectedPaymentMethods(activeOnes);
+          const primary = activeOnes.find((m: any) => m.category === 'bank' || !m.category) || activeOnes[0];
+          if (primary) {
+            setSelectedMethodId(primary.id);
+            setBankName(primary.name || '');
+            setBankAccountNo(primary.account_no || '');
+            setBankAccountName(primary.account_name || companySettings?.company_name || 'Info Papandayan');
+          }
+          toast.success(`Berhasil disinkronkan! ${activeOnes.length} metode pembayaran aktif dimuat dari Pengaturan.`);
+          return;
+        }
+      }
+      toast.info('Pengaturan telah dimuat.');
+    } catch {
+      toast.error('Gagal menyinkronkan metode pembayaran dari Pengaturan');
+    }
+  };
+
   const getPreviewData = (): InvoicePDFData => {
+    const activeMethods = selectedPaymentMethods.length > 0 ? selectedPaymentMethods : availablePaymentMethods.filter((m) => m && m.is_active);
     return {
       id: editInvoiceId || undefined,
       invoice_number: invoiceNumber.trim() || 'INV/DRAFT',
@@ -507,17 +577,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       })),
       company: companySettings,
       settings: invoiceSettings,
-      payment_methods: invoiceSettings?.payment_methods
-        ? typeof invoiceSettings.payment_methods === 'string'
-          ? (() => {
-              try {
-                return JSON.parse(invoiceSettings.payment_methods);
-              } catch {
-                return undefined;
-              }
-            })()
-          : invoiceSettings.payment_methods
-        : undefined,
+      payment_methods: activeMethods.length > 0 ? activeMethods : undefined,
     };
   };
 
@@ -999,31 +1059,98 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
             </div>
 
             {/* Bank details input */}
-            <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
-              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                Informasi Rekening Pembayaran
-              </label>
-              <input
-                type="text"
-                value={bankName}
-                onChange={(e) => setBankName(e.target.value)}
-                placeholder="Nama Bank (misal: Bank Mandiri)"
-                className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-medium"
-              />
-              <input
-                type="text"
-                value={bankAccountNo}
-                onChange={(e) => setBankAccountNo(e.target.value)}
-                placeholder="Nomor Rekening"
-                className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono font-bold"
-              />
-              <input
-                type="text"
-                value={bankAccountName}
-                onChange={(e) => setBankAccountName(e.target.value)}
-                placeholder="Atas Nama Rekening"
-                className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
-              />
+            <div className="pt-3 border-t border-slate-100 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                  Informasi Rekening Pembayaran
+                </label>
+                <button
+                  type="button"
+                  onClick={handleSyncFromSettings}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#136239] hover:underline cursor-pointer"
+                  title="Sinkronkan ulang daftar rekening aktif dari menu Pengaturan"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Sinkron Pengaturan</span>
+                </button>
+              </div>
+
+              {/* Quick Pick from Active Payment Methods from Pengaturan */}
+              {availablePaymentMethods.filter((m) => m && m.is_active).length > 0 && (
+                <div className="space-y-1.5 bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-bold text-[#136239]">
+                      Metode Pembayaran Aktif di Pengaturan ({availablePaymentMethods.filter((m) => m && m.is_active).length}):
+                    </span>
+                    <span className="text-[10px] text-slate-500">Pilih rekening utama</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {availablePaymentMethods
+                      .filter((m) => m && m.is_active)
+                      .map((m) => {
+                        const isSelected = selectedMethodId === m.id || (bankName === m.name && bankAccountNo === m.account_no);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => handleSelectPaymentMethod(m)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition cursor-pointer flex items-center gap-1.5 ${
+                              isSelected
+                                ? 'bg-[#136239] text-white border-[#136239] shadow-xs'
+                                : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/60'
+                            }`}
+                          >
+                            <span className="font-bold">{m.name}</span>
+                            {m.account_no && (
+                              <span className={`font-mono text-[11px] ${isSelected ? 'text-emerald-100' : 'text-slate-500'}`}>
+                                ({m.account_no})
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                  </div>
+                  <p className="text-[10px] text-emerald-800/90 pt-0.5 leading-snug">
+                    ✓ Rekening yang diceklis di Pengaturan otomatis sinkron dan tercetak pada dokumen faktur resmi.
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <span className="text-[11px] text-slate-500 font-semibold block">
+                  Detail Rekening Utama Invoice:
+                </span>
+                <input
+                  type="text"
+                  value={bankName}
+                  onChange={(e) => {
+                    setBankName(e.target.value);
+                    setSelectedMethodId('');
+                  }}
+                  placeholder="Nama Bank (misal: Bank BCA / Bank Mandiri)"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 focus:bg-white focus:ring-2 focus:ring-[#136239]"
+                />
+                <input
+                  type="text"
+                  value={bankAccountNo}
+                  onChange={(e) => {
+                    setBankAccountNo(e.target.value);
+                    setSelectedMethodId('');
+                  }}
+                  placeholder="Nomor Rekening"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-mono font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-[#136239]"
+                />
+                <input
+                  type="text"
+                  value={bankAccountName}
+                  onChange={(e) => {
+                    setBankAccountName(e.target.value);
+                    setSelectedMethodId('');
+                  }}
+                  placeholder="Atas Nama Rekening"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-700 focus:bg-white focus:ring-2 focus:ring-[#136239]"
+                />
+              </div>
             </div>
 
             {/* Notes */}
