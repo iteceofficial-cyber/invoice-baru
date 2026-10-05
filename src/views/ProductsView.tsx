@@ -17,6 +17,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowUpDown,
+  Save,
+  CheckSquare,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, formatNumber } from '../lib/utils.ts';
@@ -103,6 +105,11 @@ export const ProductsView: React.FC = () => {
 
   // Delete confirmation
   const [deleteProduct, setDeleteProduct] = useState<Product | null>(null);
+
+  // Bulk selection and delete state
+  const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const toast = useToast();
 
@@ -232,6 +239,59 @@ export const ProductsView: React.FC = () => {
       loadProducts();
     } else {
       toast.error(res.message || 'Gagal menghapus produk');
+    }
+  };
+
+  // Toggle selection for all visible products on current page
+  const isAllCurrentSelected = products.length > 0 && products.every((p) => selectedProductIds.includes(p.id));
+  const isSomeSelected = products.some((p) => selectedProductIds.includes(p.id));
+
+  const toggleSelectAll = () => {
+    if (isAllCurrentSelected) {
+      // Unselect all products on this page
+      const currentIds = products.map((p) => p.id);
+      setSelectedProductIds((prev) => prev.filter((id) => !currentIds.includes(id)));
+    } else {
+      // Select all products on this page
+      const currentIds = products.map((p) => p.id);
+      setSelectedProductIds((prev) => Array.from(new Set([...prev, ...currentIds])));
+    }
+  };
+
+  const toggleSelectProduct = (id: number) => {
+    setSelectedProductIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllCatalog = async () => {
+    try {
+      const res = await apiRequest('/api/products?limit=10000');
+      if (res.success && res.data) {
+        setSelectedProductIds(res.data.map((p: Product) => p.id));
+        toast.info(`Semua ${res.data.length} produk di katalog telah dipilih`);
+      }
+    } catch {
+      setSelectedProductIds(products.map((p) => p.id));
+    }
+  };
+
+  const handleConfirmBulkDelete = async () => {
+    if (selectedProductIds.length === 0) return;
+    setIsBulkDeleting(true);
+    const res = await apiRequest('/api/products/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids: selectedProductIds }),
+    });
+    setIsBulkDeleting(false);
+
+    if (res.success) {
+      toast.success(res.message || `${selectedProductIds.length} produk berhasil dihapus`);
+      setSelectedProductIds([]);
+      setIsBulkDeleteOpen(false);
+      loadProducts();
+    } else {
+      toast.error(res.message || 'Gagal menghapus produk terpilih');
     }
   };
 
@@ -447,25 +507,88 @@ export const ProductsView: React.FC = () => {
         </div>
       </div>
 
+      {/* Bulk Selection Action Bar */}
+      {selectedProductIds.length > 0 && (
+        <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-150">
+          <div className="flex items-center gap-3">
+            <span className="w-8 h-8 rounded-xl bg-amber-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+              {selectedProductIds.length}
+            </span>
+            <div>
+              <p className="text-xs sm:text-sm font-bold text-amber-950">
+                {selectedProductIds.length} produk terpilih
+              </p>
+              <p className="text-[11px] text-amber-800">
+                Pilih tindakan masal untuk produk yang telah diceklis
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSelectAll}
+              className="px-3 py-1.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 text-xs font-semibold transition cursor-pointer"
+            >
+              {isAllCurrentSelected ? 'Batalkan di Halaman Ini' : `Pilih Semua Halaman Ini (${products.length})`}
+            </button>
+            <button
+              type="button"
+              onClick={handleSelectAllCatalog}
+              className="px-3 py-1.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 text-xs font-semibold transition cursor-pointer"
+            >
+              Pilih Seluruh Katalog ({totalItems})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedProductIds([])}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold transition cursor-pointer"
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsBulkDeleteOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Hapus ({selectedProductIds.length}) Terpilih</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Products Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-200">
               <tr>
-                <th className="py-3.5 px-5 font-semibold">Kode</th>
+                <th className="py-3.5 px-4 w-12 text-center">
+                  <input
+                    type="checkbox"
+                    checked={isAllCurrentSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = isSomeSelected && !isAllCurrentSelected;
+                    }}
+                    onChange={toggleSelectAll}
+                    title="Pilih Semua di Halaman Ini"
+                    className="w-4 h-4 rounded-md accent-blue-600 border-slate-300 cursor-pointer"
+                  />
+                </th>
+                <th className="py-3.5 px-4 font-semibold">Kode</th>
                 <th className="py-3.5 px-5 font-semibold">Nama Produk</th>
-                <th className="py-3.5 px-5 font-semibold">Satuan</th>
-                <th className="py-3.5 px-5 font-semibold text-right">Harga Jual</th>
-                <th className="py-3.5 px-5 font-semibold text-center">Stok</th>
-                <th className="py-3.5 px-5 font-semibold text-center">Status</th>
+                <th className="py-3.5 px-4 font-semibold">Satuan</th>
+                <th className="py-3.5 px-4 font-semibold text-right">Harga Jual</th>
+                <th className="py-3.5 px-4 font-semibold text-center">Stok</th>
+                <th className="py-3.5 px-4 font-semibold text-center">Status</th>
                 <th className="py-3.5 px-5 font-semibold text-right">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
                       <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
                       <span>Memuat data produk...</span>
@@ -474,7 +597,7 @@ export const ProductsView: React.FC = () => {
                 </tr>
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
                     <Package className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                     <p className="font-semibold text-slate-600">Tidak ada produk ditemukan</p>
                     <p className="text-xs text-slate-400 mt-0.5">
@@ -485,9 +608,23 @@ export const ProductsView: React.FC = () => {
               ) : (
                 products.map((p) => {
                   const isLowStock = p.stock <= 10;
+                  const isSelected = selectedProductIds.includes(p.id);
                   return (
-                    <tr key={p.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-4 px-5">
+                    <tr
+                      key={p.id}
+                      className={`transition-colors ${
+                        isSelected ? 'bg-amber-50/50 hover:bg-amber-100/50' : 'hover:bg-slate-50/70'
+                      }`}
+                    >
+                      <td className="py-4 px-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectProduct(p.id)}
+                          className="w-4 h-4 rounded-md accent-blue-600 border-slate-300 cursor-pointer"
+                        />
+                      </td>
+                      <td className="py-4 px-4">
                         <span className="font-mono text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-md border border-blue-100">
                           {p.code}
                         </span>
@@ -500,13 +637,13 @@ export const ProductsView: React.FC = () => {
                           </div>
                         )}
                       </td>
-                      <td className="py-4 px-5 text-slate-600 text-xs font-medium">
+                      <td className="py-4 px-4 text-slate-600 text-xs font-medium">
                         {p.unit}
                       </td>
-                      <td className="py-4 px-5 font-bold text-slate-900 text-right">
+                      <td className="py-4 px-4 font-bold text-slate-900 text-right">
                         {formatRupiah(p.price)}
                       </td>
-                      <td className="py-4 px-5 text-center">
+                      <td className="py-4 px-4 text-center">
                         <span
                           className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
                             isLowStock
@@ -517,7 +654,7 @@ export const ProductsView: React.FC = () => {
                           {formatNumber(p.stock)}
                         </span>
                       </td>
-                      <td className="py-4 px-5 text-center">
+                      <td className="py-4 px-4 text-center">
                         <span
                           className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${
                             p.status === 'active'
@@ -840,6 +977,44 @@ export const ProductsView: React.FC = () => {
                 </div>
               )}
 
+              {/* Highlight Save Banner right after Excel upload */}
+              {previewData && (
+                <div className="p-4 rounded-2xl bg-emerald-50 border-2 border-emerald-400 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm animate-in fade-in zoom-in-95 duration-150">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                      <CheckCircle2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-extrabold text-emerald-950">
+                        {previewData.validCount} Data Produk Siap Disimpan!
+                      </h4>
+                      <p className="text-xs text-emerald-800 mt-0.5">
+                        File <span className="font-semibold">{importFile?.name}</span> telah selesai diverifikasi. Klik tombol di samping untuk menyimpan langsung ke database.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={commitLoading || previewData.validCount === 0}
+                    onClick={handleCommitImport}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold shadow-md shadow-emerald-900/20 transition cursor-pointer shrink-0 w-full sm:w-auto"
+                  >
+                    {commitLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Menyimpan ke Database...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="w-4 h-4" />
+                        <span>Simpan {previewData.validCount} Produk ke Database</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
               {/* Preview Table with row error checking */}
               {previewData && (
                 <div className="space-y-3">
@@ -986,6 +1161,59 @@ export const ProductsView: React.FC = () => {
                 className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-500/20 cursor-pointer"
               >
                 Ya, Hapus Produk
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION DIALOG: Hapus Masal Produk Terpilih */}
+      {isBulkDeleteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-rose-600 mb-3">
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Hapus {selectedProductIds.length} Produk Terpilih?</h3>
+                <p className="text-xs text-slate-500">Tindakan ini tidak dapat dibatalkan</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 py-2">
+              Apakah Anda yakin ingin menghapus <strong className="text-slate-900">{selectedProductIds.length} produk</strong> yang diceklis dari sistem?
+            </p>
+            <p className="text-xs text-slate-500 bg-slate-50 p-2.5 rounded-xl mb-4 border border-slate-200">
+              Catatan: Riwayat produk pada faktur invoice terdahulu tetap dipertahankan demi keutuhan data transaksi.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={() => setIsBulkDeleteOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={handleConfirmBulkDelete}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-500/20 cursor-pointer disabled:opacity-50"
+              >
+                {isBulkDeleting ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Ya, Hapus {selectedProductIds.length} Produk</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

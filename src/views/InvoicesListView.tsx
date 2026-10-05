@@ -64,6 +64,11 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState<InvoiceRow | null>(null);
 
+  // Bulk selection and delete state
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<number[]>([]);
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
   const toast = useToast();
 
   const loadInvoices = async () => {
@@ -146,6 +151,57 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
       loadInvoices();
     } else {
       toast.error(res.message || 'Gagal menghapus invoice');
+    }
+  };
+
+  // Bulk selection handlers
+  const isAllCurrentSelected = invoices.length > 0 && invoices.every((inv) => selectedInvoiceIds.includes(inv.id));
+  const isSomeSelected = invoices.some((inv) => selectedInvoiceIds.includes(inv.id));
+
+  const toggleSelectAll = () => {
+    if (isAllCurrentSelected) {
+      const currentIds = invoices.map((inv) => inv.id);
+      setSelectedInvoiceIds((prev) => prev.filter((id) => !currentIds.includes(id)));
+    } else {
+      const currentIds = invoices.map((inv) => inv.id);
+      setSelectedInvoiceIds((prev) => Array.from(new Set([...prev, ...currentIds])));
+    }
+  };
+
+  const toggleSelectInvoice = (id: number) => {
+    setSelectedInvoiceIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllDatabase = async () => {
+    try {
+      const res = await apiRequest('/api/invoices?limit=10000');
+      if (res.success && res.data) {
+        setSelectedInvoiceIds(res.data.map((inv: InvoiceRow) => inv.id));
+        toast.info(`Semua ${res.data.length} invoice telah dipilih`);
+      }
+    } catch {
+      setSelectedInvoiceIds(invoices.map((inv) => inv.id));
+    }
+  };
+
+  const handleConfirmBulkDelete = async () => {
+    if (selectedInvoiceIds.length === 0) return;
+    setIsBulkDeleting(true);
+    const res = await apiRequest('/api/invoices/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids: selectedInvoiceIds }),
+    });
+    setIsBulkDeleting(false);
+
+    if (res.success) {
+      toast.success(res.message || `${selectedInvoiceIds.length} invoice berhasil dihapus dan stok barang dikembalikan`);
+      setSelectedInvoiceIds([]);
+      setIsBulkDeleteOpen(false);
+      loadInvoices();
+    } else {
+      toast.error(res.message || 'Gagal menghapus invoice terpilih');
     }
   };
 
@@ -265,25 +321,88 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
         </div>
       </div>
 
+      {/* Bulk Selection Action Bar */}
+      {selectedInvoiceIds.length > 0 && (
+        <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-150">
+          <div className="flex items-center gap-3">
+            <span className="w-8 h-8 rounded-xl bg-amber-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+              {selectedInvoiceIds.length}
+            </span>
+            <div>
+              <p className="text-xs sm:text-sm font-bold text-amber-950">
+                {selectedInvoiceIds.length} faktur invoice terpilih
+              </p>
+              <p className="text-[11px] text-amber-800">
+                Pilih tindakan masal untuk invoice yang telah diceklis
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSelectAll}
+              className="px-3 py-1.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 text-xs font-semibold transition cursor-pointer"
+            >
+              {isAllCurrentSelected ? 'Batalkan di Halaman Ini' : `Pilih Semua Halaman Ini (${invoices.length})`}
+            </button>
+            <button
+              type="button"
+              onClick={handleSelectAllDatabase}
+              className="px-3 py-1.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 text-xs font-semibold transition cursor-pointer"
+            >
+              Pilih Seluruh Database ({totalCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedInvoiceIds([])}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold transition cursor-pointer"
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsBulkDeleteOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Hapus ({selectedInvoiceIds.length}) Terpilih</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Invoices Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="bg-slate-50/80 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-200">
               <tr>
-                <th className="py-3.5 px-5 font-semibold">Nomor Invoice</th>
+                <th className="py-3.5 px-4 w-12 text-center">
+                  <input
+                    type="checkbox"
+                    checked={isAllCurrentSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = isSomeSelected && !isAllCurrentSelected;
+                    }}
+                    onChange={toggleSelectAll}
+                    title="Pilih Semua di Halaman Ini"
+                    className="w-4 h-4 rounded-md accent-[#136239] border-slate-300 cursor-pointer"
+                  />
+                </th>
+                <th className="py-3.5 px-4 font-semibold">Nomor Invoice</th>
                 <th className="py-3.5 px-5 font-semibold">Pelanggan / Klien</th>
-                <th className="py-3.5 px-5 font-semibold">Tanggal Kegiatan</th>
-                <th className="py-3.5 px-5 font-semibold text-center">Jml Barang</th>
-                <th className="py-3.5 px-5 font-semibold text-right">Total Tagihan</th>
-                <th className="py-3.5 px-5 font-semibold text-center">Status</th>
+                <th className="py-3.5 px-4 font-semibold">Tanggal Kegiatan</th>
+                <th className="py-3.5 px-4 font-semibold text-center">Jml Barang</th>
+                <th className="py-3.5 px-4 font-semibold text-right">Total Tagihan</th>
+                <th className="py-3.5 px-4 font-semibold text-center">Status</th>
                 <th className="py-3.5 px-5 font-semibold text-right">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
                       <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
                       <span>Memuat daftar invoice...</span>
@@ -292,7 +411,7 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                 </tr>
               ) : invoices.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
                     <FileText className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                     <p className="font-semibold text-slate-600">Tidak ada invoice ditemukan</p>
                     <p className="text-xs text-slate-400 mt-0.5">
@@ -301,94 +420,110 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                   </td>
                 </tr>
               ) : (
-                invoices.map((inv) => (
-                  <tr key={inv.id} className="hover:bg-slate-50/70 transition-colors">
-                    <td className="py-4 px-5">
-                      <span className="font-mono text-xs font-bold text-[#136239] bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
-                        {inv.invoice_number}
-                      </span>
-                    </td>
-                    <td className="py-4 px-5">
-                      <div className="font-bold text-slate-900 leading-tight">
-                        {inv.customer_name}
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">
-                        Oleh: {inv.created_by_name || 'Admin'}
-                      </div>
-                    </td>
-                    <td className="py-4 px-5 text-slate-600 text-xs font-medium">
-                      {formatDateIndo(inv.activity_date)}
-                    </td>
-                    <td className="py-4 px-5 text-center">
-                      <span className="text-xs font-semibold text-slate-700">
-                        {inv.item_count || 1} jenis ({inv.total_qty || 0} unit)
-                      </span>
-                    </td>
-                    <td className="py-4 px-5 text-right font-extrabold text-slate-900 text-sm">
-                      {formatRupiah(inv.total_amount)}
-                    </td>
-                    <td className="py-4 px-5 text-center">
-                      <span
-                        className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
-                          inv.status === 'paid'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                invoices.map((inv) => {
+                  const isSelected = selectedInvoiceIds.includes(inv.id);
+                  return (
+                    <tr
+                      key={inv.id}
+                      className={`transition-colors ${
+                        isSelected ? 'bg-amber-50/50 hover:bg-amber-100/50' : 'hover:bg-slate-50/70'
+                      }`}
+                    >
+                      <td className="py-4 px-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectInvoice(inv.id)}
+                          className="w-4 h-4 rounded-md accent-[#136239] border-slate-300 cursor-pointer"
+                        />
+                      </td>
+                      <td className="py-4 px-4">
+                        <span className="font-mono text-xs font-bold text-[#136239] bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                          {inv.invoice_number}
+                        </span>
+                      </td>
+                      <td className="py-4 px-5">
+                        <div className="font-bold text-slate-900 leading-tight">
+                          {inv.customer_name}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Oleh: {inv.created_by_name || 'Admin'}
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 text-slate-600 text-xs font-medium">
+                        {formatDateIndo(inv.activity_date)}
+                      </td>
+                      <td className="py-4 px-4 text-center">
+                        <span className="text-xs font-semibold text-slate-700">
+                          {inv.item_count || 1} jenis ({inv.total_qty || 0} unit)
+                        </span>
+                      </td>
+                      <td className="py-4 px-4 text-right font-extrabold text-slate-900 text-sm">
+                        {formatRupiah(inv.total_amount)}
+                      </td>
+                      <td className="py-4 px-4 text-center">
+                        <span
+                          className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
+                            inv.status === 'paid'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : inv.status === 'pending'
+                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                              : inv.status === 'cancelled'
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : 'bg-slate-100 text-slate-700 border border-slate-200'
+                          }`}
+                        >
+                          {inv.status === 'paid'
+                            ? 'Lunas'
                             : inv.status === 'pending'
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                            ? 'Menunggu'
                             : inv.status === 'cancelled'
-                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                            : 'bg-slate-100 text-slate-700 border border-slate-200'
-                        }`}
-                      >
-                        {inv.status === 'paid'
-                          ? 'Lunas'
-                          : inv.status === 'pending'
-                          ? 'Menunggu'
-                          : inv.status === 'cancelled'
-                          ? 'Dibatalkan'
-                          : 'Draft'}
-                      </span>
-                    </td>
-                    <td className="py-4 px-5 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => handleOpenPreview(inv.id)}
-                          title="Lihat / Preview A4"
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDownloadPDF(inv.id)}
-                          title="Download PDF"
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition cursor-pointer"
-                        >
-                          <Download className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => handlePrintInvoice(inv.id)}
-                          title="Print / Cetak"
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition cursor-pointer"
-                        >
-                          <Printer className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => onEditInvoice(inv.id)}
-                          title="Edit Invoice"
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-amber-600 hover:bg-amber-50 transition cursor-pointer"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setDeleteInvoiceTarget(inv)}
-                          title="Hapus Invoice"
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                            ? 'Dibatalkan'
+                            : 'Draft'}
+                        </span>
+                      </td>
+                      <td className="py-4 px-5 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => handleOpenPreview(inv.id)}
+                            title="Lihat / Preview A4"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDownloadPDF(inv.id)}
+                            title="Download PDF"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition cursor-pointer"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handlePrintInvoice(inv.id)}
+                            title="Print / Cetak"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition cursor-pointer"
+                          >
+                            <Printer className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => onEditInvoice(inv.id)}
+                            title="Edit Invoice"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-amber-600 hover:bg-amber-50 transition cursor-pointer"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteInvoiceTarget(inv)}
+                            title="Hapus Invoice"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -464,6 +599,59 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                 className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-500/20 cursor-pointer"
               >
                 Ya, Hapus Faktur
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION: Hapus Masal Invoice Terpilih */}
+      {isBulkDeleteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 text-rose-600 mb-3">
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Hapus {selectedInvoiceIds.length} Invoice Terpilih?</h3>
+                <p className="text-xs text-slate-500">Tindakan ini akan mengembalikan stok barang yang tercatat</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 py-2">
+              Apakah Anda yakin ingin menghapus <strong className="text-slate-900">{selectedInvoiceIds.length} faktur invoice</strong> yang diceklis?
+            </p>
+            <p className="text-xs text-slate-500 bg-slate-50 p-2.5 rounded-xl mb-4 border border-slate-200">
+              Catatan: Setiap unit produk yang sebelumnya tercatat keluar pada faktur-faktur ini akan otomatis dikembalikan ke stok gudang.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={() => setIsBulkDeleteOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isBulkDeleting}
+                onClick={handleConfirmBulkDelete}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-500/20 cursor-pointer disabled:opacity-50"
+              >
+                {isBulkDeleting ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Ya, Hapus {selectedInvoiceIds.length} Invoice</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

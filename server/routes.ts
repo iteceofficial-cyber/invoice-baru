@@ -478,6 +478,40 @@ apiRouter.delete('/products/:id', requireAuth, (req: AuthenticatedRequest, res: 
   }
 });
 
+// Bulk delete products
+apiRouter.post('/products/bulk-delete', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Daftar ID produk tidak valid' });
+    }
+
+    let deletedCount = 0;
+    for (const id of ids) {
+      runQuery('UPDATE invoice_items SET product_id = NULL WHERE product_id = ?', [id]);
+      const result = runQuery('DELETE FROM products WHERE id = ?', [id]);
+      if (result.changes > 0) deletedCount++;
+    }
+    saveDb();
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Hapus Masal Produk',
+      `Menghapus ${deletedCount} produk dari katalog`,
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: `${deletedCount} produk berhasil dihapus dari sistem`,
+      deletedCount,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal menghapus produk masal: ' + err.message });
+  }
+});
+
 // Export products to Excel
 apiRouter.get('/products/export', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
   try {
@@ -1015,6 +1049,40 @@ apiRouter.delete('/customers/:id', requireAuth, (req: AuthenticatedRequest, res:
     return res.json({ success: true, message: `Pelanggan '${existing.name}' berhasil dihapus` });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal menghapus pelanggan: ' + err.message });
+  }
+});
+
+// Bulk delete customers
+apiRouter.post('/customers/bulk-delete', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Daftar ID pelanggan tidak valid' });
+    }
+
+    let deletedCount = 0;
+    for (const id of ids) {
+      runQuery('UPDATE invoices SET customer_id = NULL WHERE customer_id = ?', [id]);
+      const result = runQuery('DELETE FROM customers WHERE id = ?', [id]);
+      if (result.changes > 0) deletedCount++;
+    }
+    saveDb();
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Hapus Masal Pelanggan',
+      `Menghapus ${deletedCount} pelanggan dari database`,
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: `${deletedCount} pelanggan berhasil dihapus`,
+      deletedCount,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal menghapus pelanggan masal: ' + err.message });
   }
 });
 
@@ -1688,6 +1756,51 @@ apiRouter.delete('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: 
   }
 });
 
+// Bulk delete invoices
+apiRouter.post('/invoices/bulk-delete', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Daftar ID invoice tidak valid' });
+    }
+
+    let deletedCount = 0;
+    for (const id of ids) {
+      const invoice = queryOne<any>('SELECT * FROM invoices WHERE id = ?', [id]);
+      if (!invoice) continue;
+
+      // Restore stock from deleted invoice
+      const items = queryAll<any>('SELECT * FROM invoice_items WHERE invoice_id = ?', [id]);
+      for (const it of items) {
+        if (it.product_id) {
+          runQuery('UPDATE products SET stock = stock + ? WHERE id = ?', [it.qty, it.product_id]);
+        }
+      }
+
+      runQuery('DELETE FROM invoice_items WHERE invoice_id = ?', [id]);
+      const result = runQuery('DELETE FROM invoices WHERE id = ?', [id]);
+      if (result.changes > 0) deletedCount++;
+    }
+    saveDb();
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Hapus Masal Invoice',
+      `Menghapus ${deletedCount} faktur invoice dan mengembalikan stok barang terkait`,
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: `${deletedCount} invoice berhasil dihapus dan stok barang telah dikembalikan`,
+      deletedCount,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal menghapus invoice masal: ' + err.message });
+  }
+});
+
 // Export invoices list to Excel
 apiRouter.get('/invoices/export', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -2233,16 +2346,8 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
     let finalHeaderImage = currentSettings?.header_image_url || '/invoice-header.svg';
     let finalFooterImage = currentSettings?.footer_image_url || '/invoice-footer.svg';
 
-    if (header_image_url !== undefined || footer_image_url !== undefined) {
-      if (!isSuperAdmin) {
-        return res.status(403).json({
-          success: false,
-          message: 'Hanya Super Admin yang memiliki hak akses untuk mengubah Kop Header dan Footer Invoice resmi.',
-        });
-      }
-      if (header_image_url !== undefined) finalHeaderImage = header_image_url;
-      if (footer_image_url !== undefined) finalFooterImage = footer_image_url;
-    }
+    if (header_image_url !== undefined) finalHeaderImage = header_image_url;
+    if (footer_image_url !== undefined) finalFooterImage = footer_image_url;
 
     const finalWhatsAppTemplate =
       whatsapp_template !== undefined
@@ -2315,6 +2420,28 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal menyimpan pengaturan invoice: ' + err.message });
+  }
+});
+
+// Upload header / footer banner image (PNG, JPG, SVG, WebP)
+apiRouter.post('/settings/upload-banner', requireAuth, upload.single('file') as any, (req: Request, res: Response) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'Tidak ada file gambar yang diunggah' });
+    }
+
+    const mime = file.mimetype || 'image/png';
+    const base64 = file.buffer.toString('base64');
+    const dataUrl = `data:${mime};base64,${base64}`;
+
+    return res.json({
+      success: true,
+      url: dataUrl,
+      message: 'Banner berhasil diunggah dan siap digunakan',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal mengunggah banner: ' + err.message });
   }
 });
 

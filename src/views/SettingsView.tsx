@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Building2,
   FileText,
@@ -17,6 +17,10 @@ import {
   HelpCircle,
   Smartphone,
   ShieldCheck,
+  Image as ImageIcon,
+  Upload,
+  Eye,
+  RefreshCw,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { useToast } from '../context/ToastContext.tsx';
@@ -62,7 +66,9 @@ export const SettingsView: React.FC = () => {
   const { user } = useAuth();
   const isSuperAdmin = user?.role_name === 'Super Admin' || user?.role_id === 1;
 
-  const [activeTab, setActiveTab] = useState<'company' | 'payment' | 'whatsapp' | 'invoice' | 'branding' | 'security'>('company');
+  const [activeTab, setActiveTab] = useState<
+    'company' | 'header-footer' | 'payment' | 'whatsapp' | 'invoice' | 'branding' | 'security'
+  >('company');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -105,6 +111,49 @@ export const SettingsView: React.FC = () => {
   const [whatsappTemplate, setWhatsappTemplate] = useState<string>(DEFAULT_WHATSAPP_TEMPLATE);
 
   const toast = useToast();
+  const headerFileInputRef = useRef<HTMLInputElement>(null);
+  const footerFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageUpload = (file: File | undefined, type: 'header' | 'footer') => {
+    if (!file) return;
+    if (!file.type.startsWith('image/') && !file.name.endsWith('.svg')) {
+      toast.error('File harus berformat gambar (.png, .jpg, .jpeg, .svg, .webp)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      if (type === 'header') {
+        setInvoice((prev) => ({ ...prev, header_image_url: dataUrl }));
+        toast.success('Gambar Kop Header berhasil dimuat! Klik "Simpan Kop Header & Footer" untuk menerapkan.');
+      } else {
+        setInvoice((prev) => ({ ...prev, footer_image_url: dataUrl }));
+        toast.success('Gambar Kop Footer berhasil dimuat! Klik "Simpan Kop Header & Footer" untuk menerapkan.');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveHeaderFooter = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setSaving(true);
+    const res = await apiRequest('/api/settings/invoice', {
+      method: 'PUT',
+      body: JSON.stringify({
+        ...invoice,
+        header_image_url: invoice.header_image_url,
+        footer_image_url: invoice.footer_image_url,
+        footer_text: invoice.footer_text,
+      }),
+    });
+    setSaving(false);
+
+    if (res.success) {
+      toast.success('Kop Header & Footer Invoice resmi berhasil disimpan!');
+    } else {
+      toast.error(res.message || 'Gagal menyimpan Kop Header & Footer');
+    }
+  };
 
   useEffect(() => {
     loadAllSettings();
@@ -332,6 +381,18 @@ export const SettingsView: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setActiveTab('header-footer')}
+          className={`flex items-center gap-2 px-4 py-2.5 font-bold text-xs border-b-2 transition whitespace-nowrap cursor-pointer ${
+            activeTab === 'header-footer'
+              ? 'border-[#136239] text-[#136239]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <ImageIcon className="w-4 h-4" />
+          <span>Kop Header & Footer</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('payment')}
           className={`flex items-center gap-2 px-4 py-2.5 font-bold text-xs border-b-2 transition whitespace-nowrap cursor-pointer ${
             activeTab === 'payment'
@@ -478,6 +539,284 @@ export const SettingsView: React.FC = () => {
             >
               <Save className="w-4 h-4" />
               <span>{saving ? 'Menyimpan...' : 'Simpan Profil Perusahaan'}</span>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* TAB: Kop Header & Footer Invoice */}
+      {activeTab === 'header-footer' && (
+        <form onSubmit={handleSaveHeaderFooter} className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200/80 shadow-xs space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <ImageIcon className="w-5 h-5 text-[#136239]" />
+                <span>Pengaturan Kop Header & Footer Invoice Resmi</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Ubah gambar banner header kop surat atas dan footer bawah yang dicetak pada faktur invoice, unduhan PDF, dan link publik pelanggan.
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-white text-xs font-bold shadow-md shadow-emerald-950/20 cursor-pointer disabled:opacity-50 transition shrink-0"
+            >
+              <Save className="w-4 h-4" />
+              <span>{saving ? 'Menyimpan...' : 'Simpan Kop Header & Footer'}</span>
+            </button>
+          </div>
+
+          {/* Section 1: Header Banner */}
+          <div className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span>Banner Kop Header (Bagian Atas Invoice)</span>
+                  <span className="text-[10px] font-semibold uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                    Kop Resmi
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Format yang disarankan: Gambar rasio memanjang lebar (1200 x 310 piksel), SVG atau PNG transparan/putih.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setInvoice((prev) => ({ ...prev, header_image_url: '/invoice-header.svg' }));
+                  toast.info('Kop Header direset ke default resmi Info Papandayan');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset Header Default</span>
+              </button>
+            </div>
+
+            {/* Header Image Preview Box */}
+            <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-inner flex flex-col items-center justify-center min-h-[100px]">
+              {invoice.header_image_url ? (
+                <img
+                  src={invoice.header_image_url}
+                  alt="Pratinjau Kop Header"
+                  className="max-h-28 w-auto object-contain rounded-lg"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = '/invoice-header.svg';
+                  }}
+                />
+              ) : (
+                <div className="text-xs text-slate-400 py-4 text-center">
+                  Belum ada gambar header. Menggunakan default sistem.
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+              <div>
+                <input
+                  type="file"
+                  ref={headerFileInputRef}
+                  accept=".png,.jpg,.jpeg,.svg,.webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleImageUpload(file, 'header');
+                    if (headerFileInputRef.current) headerFileInputRef.current.value = '';
+                  }}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => headerFileInputRef.current?.click()}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-[#136239]/40 bg-emerald-50/50 hover:bg-emerald-100/60 text-[#136239] text-xs font-bold transition cursor-pointer"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Unggah File Banner Header (.svg, .png, .jpg)</span>
+                </button>
+              </div>
+
+              <div>
+                <input
+                  type="text"
+                  value={invoice.header_image_url}
+                  onChange={(e) => setInvoice({ ...invoice, header_image_url: e.target.value })}
+                  placeholder="Atau masukkan URL / path header (contoh: /invoice-header.svg)"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-mono text-slate-800 focus:ring-2 focus:ring-[#136239]"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Footer Banner */}
+          <div className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span>Banner Kop Footer (Bagian Bawah Invoice)</span>
+                  <span className="text-[10px] font-semibold uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                    Kop Resmi
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Format yang disarankan: Gambar rasio memanjang lebar (1200 x 310 piksel), SVG atau PNG.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setInvoice((prev) => ({ ...prev, footer_image_url: '/invoice-footer.svg' }));
+                  toast.info('Kop Footer direset ke default resmi Info Papandayan');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset Footer Default</span>
+              </button>
+            </div>
+
+            {/* Footer Image Preview Box */}
+            <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-inner flex flex-col items-center justify-center min-h-[100px]">
+              {invoice.footer_image_url ? (
+                <img
+                  src={invoice.footer_image_url}
+                  alt="Pratinjau Kop Footer"
+                  className="max-h-28 w-auto object-contain rounded-lg"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = '/invoice-footer.svg';
+                  }}
+                />
+              ) : (
+                <div className="text-xs text-slate-400 py-4 text-center">
+                  Belum ada gambar footer. Menggunakan default sistem.
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+              <div>
+                <input
+                  type="file"
+                  ref={footerFileInputRef}
+                  accept=".png,.jpg,.jpeg,.svg,.webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleImageUpload(file, 'footer');
+                    if (footerFileInputRef.current) footerFileInputRef.current.value = '';
+                  }}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => footerFileInputRef.current?.click()}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-[#136239]/40 bg-emerald-50/50 hover:bg-emerald-100/60 text-[#136239] text-xs font-bold transition cursor-pointer"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Unggah File Banner Footer (.svg, .png, .jpg)</span>
+                </button>
+              </div>
+
+              <div>
+                <input
+                  type="text"
+                  value={invoice.footer_image_url}
+                  onChange={(e) => setInvoice({ ...invoice, footer_image_url: e.target.value })}
+                  placeholder="Atau masukkan URL / path footer (contoh: /invoice-footer.svg)"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-mono text-slate-800 focus:ring-2 focus:ring-[#136239]"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Catatan / Teks Footer */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+              Teks Keterangan Footer / Catatan Pengesahan Dokumen
+            </label>
+            <textarea
+              rows={2}
+              value={invoice.footer_text || ''}
+              onChange={(e) => setInvoice({ ...invoice, footer_text: e.target.value })}
+              placeholder="Contoh: Invoice ini diterbitkan secara sah dan diproses otomatis oleh sistem..."
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs focus:ring-2 focus:ring-[#136239] focus:bg-white"
+            />
+          </div>
+
+          {/* Section 4: Live Invoice Letterhead Preview */}
+          <div className="p-5 rounded-2xl bg-slate-900 text-white space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold flex items-center gap-2 text-emerald-400">
+                <Eye className="w-4 h-4" />
+                <span>Simulasi Tampilan Faktur A4 Resmi dengan Header & Footer Terpasang</span>
+              </span>
+              <span className="text-[11px] text-slate-400">Pratinjau Skala Dokumen</span>
+            </div>
+
+            <div className="bg-white text-slate-800 rounded-xl overflow-hidden shadow-2xl p-4 space-y-4 max-w-2xl mx-auto border border-slate-300">
+              {/* Header preview */}
+              <div className="w-full border-b border-slate-200 pb-2">
+                <img
+                  src={invoice.header_image_url || '/invoice-header.svg'}
+                  alt="Header Preview"
+                  className="w-full max-h-20 object-contain mx-auto"
+                />
+              </div>
+
+              {/* Mock Body */}
+              <div className="text-xs space-y-2 px-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase">Ditagihkan Kepada:</p>
+                    <p className="font-bold text-slate-900">PT Pelanggan Contoh Utama</p>
+                    <p className="text-[11px] text-slate-500">Klien Operasional Info Papandayan</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-mono font-bold text-emerald-800">INV/2026/10/0001</p>
+                    <p className="text-[11px] text-slate-500">Tanggal: 05/10/2026</p>
+                  </div>
+                </div>
+
+                <div className="border border-slate-200 rounded-lg overflow-hidden text-[11px]">
+                  <div className="bg-slate-100 p-1.5 font-bold flex justify-between">
+                    <span>Deskripsi Barang / Layanan</span>
+                    <span>Subtotal</span>
+                  </div>
+                  <div className="p-1.5 flex justify-between border-t border-slate-100">
+                    <span>1. Paket Layanan Wisata & Peralatan</span>
+                    <span className="font-bold">Rp 12.500.000</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer preview */}
+              <div className="w-full border-t border-slate-200 pt-2">
+                {invoice.footer_text && (
+                  <p className="text-[10px] text-center text-slate-500 italic pb-1">
+                    {invoice.footer_text}
+                  </p>
+                )}
+                <img
+                  src={invoice.footer_image_url || '/invoice-footer.svg'}
+                  alt="Footer Preview"
+                  className="w-full max-h-16 object-contain mx-auto"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <p className="text-xs text-slate-500">
+              Perubahan header dan footer langsung diterapkan pada cetak PDF A4, pratinjau, dan tautan publik pelanggan.
+            </p>
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-white text-xs font-bold shadow-md shadow-emerald-950/20 cursor-pointer disabled:opacity-50 transition shrink-0"
+            >
+              <Save className="w-4 h-4" />
+              <span>{saving ? 'Menyimpan...' : 'Simpan Kop Header & Footer'}</span>
             </button>
           </div>
         </form>
