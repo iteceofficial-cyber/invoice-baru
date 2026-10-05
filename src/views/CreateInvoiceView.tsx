@@ -18,7 +18,7 @@ import { formatRupiah, terbilang } from '../lib/utils.ts';
 import { useToast } from '../context/ToastContext.tsx';
 import { InvoicePreviewModal } from './InvoicePreviewModal.tsx';
 import { NavTab } from '../components/Sidebar.tsx';
-import { generateInvoicePDF } from '../lib/pdfGenerator.ts';
+import { generateInvoicePDF, InvoicePDFData } from '../lib/pdfGenerator.ts';
 
 interface InvoiceItemForm {
   id?: number;
@@ -67,6 +67,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
   const [customerAddress, setCustomerAddress] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
   const [saveNewCustomerToDb, setSaveNewCustomerToDb] = useState(false);
 
   // Bank & Settings
@@ -138,6 +139,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
         setCustomerName(inv.customer_name);
         setSelectedCustomerId(inv.customer_id ? inv.customer_id.toString() : '');
         setCustomerAddress(inv.customer_address || '');
+        setCustomerPhone(inv.customer_phone || '');
         setActivityDate(inv.activity_date);
         setBankName(inv.bank_name || '');
         setBankAccountNo(inv.bank_account_no || '');
@@ -190,6 +192,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     if (!custId) {
       setCustomerName('');
       setCustomerAddress('');
+      setCustomerPhone('');
       return;
     }
 
@@ -197,6 +200,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     if (c) {
       setCustomerName(c.name);
       setCustomerAddress(c.address || '');
+      setCustomerPhone(c.phone || '');
     }
   };
 
@@ -330,7 +334,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
           body: JSON.stringify({
             name: customerName.trim(),
             address: customerAddress.trim(),
-            phone: '',
+            phone: customerPhone.trim(),
             email: '',
             notes: 'Ditambahkan otomatis dari form invoice ' + invoiceNumber.trim(),
           }),
@@ -348,7 +352,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       customer_id: finalCustomerId,
       customer_name: customerName.trim(),
       customer_address: customerAddress.trim(),
-      customer_phone: '',
+      customer_phone: customerPhone.trim(),
       activity_date: activityDate,
       due_date: activityDate,
       bank_account_no: bankAccountNo.trim(),
@@ -400,13 +404,14 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     }
   };
 
-  const getPreviewData = () => {
+  const getPreviewData = (): InvoicePDFData => {
     return {
-      invoice_number: invoiceNumber,
-      customer_name: customerName || 'Nama Pelanggan',
-      customer_address: customerAddress,
-      customer_phone: '',
-      activity_date: activityDate,
+      id: editInvoiceId || undefined,
+      invoice_number: invoiceNumber.trim() || 'INV/DRAFT',
+      customer_name: customerName.trim() || 'Nama Pelanggan',
+      customer_address: customerAddress.trim(),
+      customer_phone: customerPhone.trim(),
+      activity_date: activityDate || new Date().toISOString().split('T')[0],
       due_date: undefined,
       bank_account_no: bankAccountNo,
       bank_name: bankName,
@@ -419,15 +424,26 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       total_amount: grandTotal,
       status,
       items: items.map((it) => ({
-        product_code: '',
+        product_code: it.product_code || '',
         product_name: it.product_name || 'Barang',
-        qty: it.qty,
+        qty: it.qty || 1,
         unit: it.unit || 'Pcs',
-        price: it.price,
-        subtotal: it.subtotal,
+        price: it.price || 0,
+        subtotal: it.subtotal || 0,
       })),
       company: companySettings,
       settings: invoiceSettings,
+      payment_methods: invoiceSettings?.payment_methods
+        ? typeof invoiceSettings.payment_methods === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(invoiceSettings.payment_methods);
+              } catch {
+                return undefined;
+              }
+            })()
+          : invoiceSettings.payment_methods
+        : undefined,
     };
   };
 
@@ -568,6 +584,35 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
                   <option value="pending">Menunggu Pembayaran (Pending)</option>
                   <option value="draft">Draft</option>
                 </select>
+              </div>
+            </div>
+
+            {/* Additional Customer Details: Phone & Address */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Nomor WhatsApp Pelanggan (Untuk Kirim Invoice)
+                </label>
+                <input
+                  type="text"
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  placeholder="Contoh: 08123456789 atau 628123456789"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Alamat Pelanggan
+                </label>
+                <input
+                  type="text"
+                  value={customerAddress}
+                  onChange={(e) => setCustomerAddress(e.target.value)}
+                  placeholder="Alamat penagihan atau pengiriman"
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                />
               </div>
             </div>
           </div>
@@ -859,11 +904,13 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       </div>
 
       {/* Preview Modal */}
-      <InvoicePreviewModal
-        isOpen={isPreviewOpen}
-        onClose={() => setIsPreviewOpen(false)}
-        data={getPreviewData()}
-      />
+      {isPreviewOpen && (
+        <InvoicePreviewModal
+          isOpen={isPreviewOpen}
+          onClose={() => setIsPreviewOpen(false)}
+          data={getPreviewData()}
+        />
+      )}
     </div>
   );
 };

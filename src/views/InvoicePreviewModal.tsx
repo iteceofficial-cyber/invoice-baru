@@ -26,6 +26,7 @@ import {
 } from '../lib/pdfGenerator.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useToast } from '../context/ToastContext.tsx';
+import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 
 interface InvoicePreviewModalProps {
   isOpen: boolean;
@@ -46,77 +47,108 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   const toast = useToast();
 
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
-  const [targetPhone, setTargetPhone] = useState(data.customer_phone || '');
+  const [targetPhone, setTargetPhone] = useState(data?.customer_phone || '');
   const [waMessage, setWaMessage] = useState('');
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [pdfCopied, setPdfCopied] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
-    setTargetPhone(data.customer_phone || '');
-    setWaMessage(buildWhatsAppInvoiceMessage(data, data.settings?.whatsapp_template));
+    if (data && isOpen) {
+      setTargetPhone(data.customer_phone || '');
+      setWaMessage(buildWhatsAppInvoiceMessage(data, data.settings?.whatsapp_template));
+    }
   }, [data, isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || !data) return null;
 
-  const [pdfCopied, setPdfCopied] = useState(false);
-
+  const safeInvoiceNumber = data.invoice_number || 'INV';
   const idQuery = data.id ? `&id=${data.id}` : '';
   const downloadUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`
-      : `/?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`;
+      ? `${window.location.origin}/?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`
+      : `/?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`;
 
   const directPdfUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/api/invoices/public/download-pdf?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`
-      : `/api/invoices/public/download-pdf?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`;
+      ? `${window.location.origin}/api/invoices/public/download-pdf?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`
+      : `/api/invoices/public/download-pdf?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`;
 
   const handleCopyPdfLink = () => {
-    navigator.clipboard.writeText(directPdfUrl);
-    setPdfCopied(true);
-    toast.success('Link langsung unduh PDF berhasil disalin');
-    setTimeout(() => setPdfCopied(false), 2000);
+    try {
+      navigator.clipboard.writeText(directPdfUrl);
+      setPdfCopied(true);
+      toast.success('Link langsung unduh PDF berhasil disalin');
+      setTimeout(() => setPdfCopied(false), 2000);
+    } catch {
+      toast.error('Gagal menyalin link PDF');
+    }
   };
 
-  const handleDownload = () => {
-    generateInvoicePDF(data, 'download');
-    toast.success('Mengunduh file PDF A4 resmi...');
+  const handleDownload = async () => {
+    try {
+      toast.info('Menyiapkan file PDF resmi...');
+      await generateInvoicePDF(data, 'download');
+      toast.success('Mengunduh file PDF A4 resmi...');
+    } catch (err: any) {
+      toast.error('Gagal mengunduh PDF: ' + (err?.message || 'Error'));
+    }
   };
 
-  const handlePrint = () => {
-    generateInvoicePDF(data, 'print');
+  const handlePrint = async () => {
+    try {
+      await generateInvoicePDF(data, 'print');
+    } catch (err: any) {
+      toast.error('Gagal mencetak invoice: ' + (err?.message || 'Error'));
+    }
   };
 
   const handleSendWhatsApp = () => {
-    openWhatsAppInvoice(data, targetPhone, waMessage);
-    toast.success('Membuka WhatsApp untuk mengirim faktur...');
-    setIsSendModalOpen(false);
+    try {
+      openWhatsAppInvoice(data, targetPhone, waMessage);
+      toast.success('Membuka WhatsApp untuk mengirim faktur...');
+      setIsSendModalOpen(false);
+    } catch (err: any) {
+      toast.error('Gagal membuka WhatsApp: ' + (err?.message || 'Error'));
+    }
   };
 
   const handleSharePdfDirectly = async () => {
     toast.info('Menyiapkan file PDF untuk dibagikan...');
-    const shared = await shareInvoicePdfDirectly(data);
-    if (shared) {
-      toast.success('Faktur PDF berhasil dibagikan');
-      setIsSendModalOpen(false);
-    } else {
-      toast.info('Bagikan file via WhatsApp atau unduh PDF');
+    try {
+      const shared = await shareInvoicePdfDirectly(data);
+      if (shared) {
+        toast.success('Faktur PDF berhasil dibagikan');
+        setIsSendModalOpen(false);
+      } else {
+        toast.info('Bagikan file via WhatsApp atau unduh file PDF langsung');
+      }
+    } catch (err: any) {
+      toast.error('Gagal membagikan PDF: ' + (err?.message || 'Error'));
     }
   };
 
   const handleCopySummary = () => {
-    navigator.clipboard.writeText(waMessage);
-    setCopied(true);
-    toast.success('Pesan WhatsApp berhasil disalin ke clipboard');
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      navigator.clipboard.writeText(waMessage);
+      setCopied(true);
+      toast.success('Pesan WhatsApp berhasil disalin ke clipboard');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error('Gagal menyalin teks pesan');
+    }
   };
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(downloadUrl);
-    setLinkCopied(true);
-    toast.success('Link unduh invoice berhasil disalin');
-    setTimeout(() => setLinkCopied(false), 2000);
+    try {
+      navigator.clipboard.writeText(downloadUrl);
+      setLinkCopied(true);
+      toast.success('Link unduh invoice berhasil disalin');
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      toast.error('Gagal menyalin link unduh');
+    }
   };
 
   const handleResetMessage = () => {
@@ -139,7 +171,9 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
       ? 'MENUNGGU PEMBAYARAN'
       : data.status === 'cancelled'
       ? 'DIBATALKAN'
-      : 'DRAFT';
+      : (data.status || 'DRAFT').toUpperCase();
+
+  const items = Array.isArray(data.items) ? data.items : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/80 backdrop-blur-sm overflow-y-auto">
@@ -205,75 +239,86 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
         {/* Scrollable A4 Document Paper Container */}
         <div className="overflow-y-auto p-3 sm:p-6 bg-slate-200/80 flex justify-center custom-scrollbar flex-1">
-          {/* Actual White Sheet (simulates standard 210mm x 297mm paper) */}
-          <div className="bg-white rounded-lg shadow-xl border border-slate-300 w-full max-w-[760px] text-slate-900 flex flex-col justify-between overflow-hidden">
-            <div>
-              {/* 1. OFFICIAL HEADER BANNER (Info Papandayan Image / Custom Super Admin Banner) */}
-              <div className="w-full bg-white select-none border-b border-slate-100">
-                <img
-                  src={data.settings?.header_image_url || '/invoice-header.svg'}
-                  alt="Invoice Header"
-                  className="w-full h-auto object-contain block"
-                  onError={(e) => {
-                    const target = e.currentTarget;
-                    if (!target.dataset.hasFailed) {
-                      target.dataset.hasFailed = 'true';
-                      target.src = '/invoice-header.svg';
-                    } else {
-                      target.style.display = 'none';
-                    }
-                  }}
-                />
-              </div>
+          <ErrorBoundary fallbackTitle="Terjadi kendala saat merender pratinjau invoice">
+            {/* Actual White Sheet (simulates standard 210mm x 297mm paper) */}
+            <div className="bg-white rounded-lg shadow-xl border border-slate-300 w-full max-w-[760px] text-slate-900 flex flex-col justify-between overflow-hidden">
+              <div>
+                {/* 1. OFFICIAL HEADER BANNER (Info Papandayan Image / Custom Super Admin Banner) */}
+                <div className="w-full bg-white select-none border-b border-slate-100">
+                  <img
+                    src={data.settings?.header_image_url || '/invoice-header.svg'}
+                    alt="Invoice Header"
+                    className="w-full h-auto object-contain block"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (!target.dataset.hasFailed) {
+                        target.dataset.hasFailed = 'true';
+                        target.src = '/invoice-header.svg';
+                      } else {
+                        target.style.display = 'none';
+                      }
+                    }}
+                  />
+                </div>
 
-              {/* 2. INVOICE CONTENT BODY */}
-              <div className="p-6 sm:p-8 space-y-6">
-                {/* Recipient & Metadata Section */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* Left: Customer Information */}
-                  <div className="bg-emerald-50/60 p-4 rounded-xl border border-emerald-200/70 space-y-1">
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#136239] block">
-                      Ditagihkan Kepada (Klien):
-                    </span>
-                    <p className="text-base font-extrabold text-slate-900 leading-snug">
-                      {data.customer_name || 'Pelanggan / Klien'}
-                    </p>
-                  </div>
+                {/* 2. INVOICE CONTENT BODY */}
+                <div className="p-6 sm:p-8 space-y-6">
+                  {/* Recipient & Metadata Section */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* Left: Customer Information */}
+                    <div className="bg-emerald-50/60 p-4 rounded-xl border border-emerald-200/70 space-y-1">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#136239] block">
+                        Ditagihkan Kepada (Klien):
+                      </span>
+                      <p className="text-base font-extrabold text-slate-900 leading-snug">
+                        {data.customer_name || 'Pelanggan / Klien'}
+                      </p>
+                      {data.customer_address && (
+                        <p className="text-xs text-slate-600 leading-relaxed pt-0.5">
+                          {data.customer_address}
+                        </p>
+                      )}
+                      {data.customer_phone && (
+                        <p className="text-xs font-mono text-emerald-800 font-semibold pt-0.5">
+                          WhatsApp: {data.customer_phone}
+                        </p>
+                      )}
+                    </div>
 
-                  {/* Right: Invoice Metadata */}
-                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-1.5 sm:text-right">
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#136239] block">
-                      Detail Transaksi & Tanggal:
-                    </span>
-                    <div className="text-xs text-slate-600 space-y-1">
-                      <p>
-                        Nomor Faktur:{' '}
-                        <strong className="text-[#136239] font-mono font-bold">
-                          {data.invoice_number}
-                        </strong>
-                      </p>
-                      <p>
-                        Tanggal Kegiatan:{' '}
-                        <strong className="text-slate-900 font-semibold">
-                          {formatDateIndo(data.activity_date)}
-                        </strong>
-                      </p>
-                      <div className="pt-1">
-                        <span
-                          className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                            data.status === 'paid'
-                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                              : data.status === 'pending'
-                              ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                              : 'bg-slate-200 text-slate-700'
-                          }`}
-                        >
-                          {statusLabel}
-                        </span>
+                    {/* Right: Invoice Metadata */}
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-1.5 sm:text-right">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#136239] block">
+                        Detail Transaksi & Tanggal:
+                      </span>
+                      <div className="text-xs text-slate-600 space-y-1">
+                        <p>
+                          Nomor Faktur:{' '}
+                          <strong className="text-[#136239] font-mono font-bold">
+                            {data.invoice_number}
+                          </strong>
+                        </p>
+                        <p>
+                          Tanggal Kegiatan:{' '}
+                          <strong className="text-slate-900 font-semibold">
+                            {formatDateIndo(data.activity_date)}
+                          </strong>
+                        </p>
+                        <div className="pt-1">
+                          <span
+                            className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                              data.status === 'paid'
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : data.status === 'pending'
+                                ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                : 'bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {statusLabel}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
 
                 {/* Table Barang / Layanan Wisata */}
                 <div className="border border-emerald-200 rounded-xl overflow-hidden shadow-xs">
@@ -288,25 +333,33 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-emerald-100/60 bg-white">
-                      {data.items.map((item, idx) => (
-                        <tr key={idx} className={idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}>
-                          <td className="py-2.5 px-3 text-center text-slate-400 font-mono">
-                            {idx + 1}
-                          </td>
-                          <td className="py-2.5 px-3 font-semibold text-slate-900">
-                            {item.product_name}
-                          </td>
-                          <td className="py-2.5 px-3 text-center font-bold text-slate-800">
-                            {item.qty} {item.unit}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-600">
-                            {formatRupiah(item.price)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-[#136239]">
-                            {formatRupiah(item.subtotal)}
+                      {items.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-4 text-center text-slate-400 text-xs italic">
+                            Belum ada rincian barang / layanan
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        items.map((item, idx) => (
+                          <tr key={idx} className={idx % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}>
+                            <td className="py-2.5 px-3 text-center text-slate-400 font-mono">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-3 font-semibold text-slate-900">
+                              {item.product_name || 'Barang'}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-bold text-slate-800">
+                              {item.qty || 1} {item.unit || 'Pcs'}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-600">
+                              {formatRupiah(item.price || 0)}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-bold text-[#136239]">
+                              {formatRupiah(item.subtotal || 0)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -320,7 +373,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                         Terbilang:
                       </span>
                       <p className="text-xs font-semibold text-[#136239] italic">
-                        "{terbilang(data.total_amount)} Rupiah"
+                        "{terbilang(data.total_amount || 0)}"
                       </p>
                     </div>
 
@@ -331,14 +384,16 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                       {(() => {
                         let activePaymentMethods: PaymentMethodItem[] = [];
                         if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
-                          activePaymentMethods = data.payment_methods.filter((m) => m.is_active);
+                          activePaymentMethods = data.payment_methods.filter((m) => m && m.is_active);
                         } else if (data.settings?.payment_methods) {
                           try {
                             const parsed =
                               typeof data.settings.payment_methods === 'string'
                                 ? JSON.parse(data.settings.payment_methods)
                                 : data.settings.payment_methods;
-                            activePaymentMethods = (parsed || []).filter((m: any) => m.is_active);
+                            if (Array.isArray(parsed)) {
+                              activePaymentMethods = parsed.filter((m: any) => m && m.is_active);
+                            }
                           } catch {}
                         }
 
@@ -422,6 +477,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
               />
             </div>
           </div>
+          </ErrorBoundary>
         </div>
       </div>
 

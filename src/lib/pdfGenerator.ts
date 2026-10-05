@@ -322,19 +322,22 @@ export async function generateInvoicePDF(data: InvoicePDFData, action: 'download
     doc.text(': MENUNGGU (PENDING)', rightX + 26, infoY + 20);
   } else {
     doc.setTextColor(100, 116, 139);
-    doc.text(`: ${data.status.toUpperCase()}`, rightX + 26, infoY + 20);
+    doc.text(`: ${(data.status || 'DRAFT').toUpperCase()}`, rightX + 26, infoY + 20);
   }
 
   // 3. Items Table (with Info Papandayan matching theme)
   const tableStartY = infoY + 31;
 
-  const tableBody = data.items.map((item, index) => [
-    index + 1,
-    item.product_name,
-    `${item.qty} ${item.unit || 'Pcs'}`,
-    formatRupiah(item.price),
-    formatRupiah(item.subtotal),
-  ]);
+  const rawItems = Array.isArray(data.items) ? data.items : [];
+  const tableBody = rawItems.length > 0
+    ? rawItems.map((item, index) => [
+        index + 1,
+        item.product_name || 'Barang',
+        `${item.qty || 1} ${item.unit || 'Pcs'}`,
+        formatRupiah(item.price || 0),
+        formatRupiah(item.subtotal || 0),
+      ])
+    : [['-', 'Belum ada rincian barang', '-', '-', '-']];
 
   autoTable(doc, {
     startY: tableStartY,
@@ -594,13 +597,16 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
   doc.setTextColor(255, 255, 255);
   doc.text(statusLabel, rightX + 27.5, infoY + 23.5, { align: 'center' });
 
-  const tableBody = data.items.map((it, idx) => [
-    idx + 1,
-    it.product_name,
-    `${it.qty} ${it.unit}`,
-    formatRupiah(it.price),
-    formatRupiah(it.subtotal),
-  ]);
+  const rawItems = Array.isArray(data.items) ? data.items : [];
+  const tableBody = rawItems.length > 0
+    ? rawItems.map((it, idx) => [
+        idx + 1,
+        it.product_name || 'Barang',
+        `${it.qty || 1} ${it.unit || 'Pcs'}`,
+        formatRupiah(it.price || 0),
+        formatRupiah(it.subtotal || 0),
+      ])
+    : [['-', 'Belum ada rincian barang', '-', '-', '-']];
 
   const tableStartY = infoY + 32;
 
@@ -636,7 +642,7 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
 
   const finalY = (doc as any).lastAutoTable.finalY + 4;
 
-  const terbilangText = terbilang(data.total_amount) + ' Rupiah';
+  const terbilangText = `"${terbilang(data.total_amount || 0)}"`;
   doc.setFillColor(248, 250, 252);
   doc.roundedRect(margin, finalY, 110, 13, 1.5, 1.5, 'F');
   doc.setDrawColor(226, 232, 240);
@@ -760,6 +766,8 @@ export function buildWhatsAppInvoiceMessage(
   templateOverride?: string,
   downloadUrlOverride?: string
 ): string {
+  if (!data) return '';
+
   const statusStr =
     data.status === 'paid'
       ? 'LUNAS (PAID)'
@@ -767,14 +775,18 @@ export function buildWhatsAppInvoiceMessage(
       ? 'MENUNGGU PEMBAYARAN'
       : data.status === 'cancelled'
       ? 'DIBATALKAN'
-      : data.status.toUpperCase();
+      : (data.status || 'DRAFT').toUpperCase();
 
-  const itemsList = data.items
-    .map(
-      (it, idx) =>
-        `  ${idx + 1}. ${it.product_name} (${it.qty} ${it.unit}) = ${formatRupiah(it.subtotal)}`
-    )
-    .join('\n');
+  const items = Array.isArray(data.items) ? data.items : [];
+  const itemsList =
+    items.length > 0
+      ? items
+          .map(
+            (it, idx) =>
+              `  ${idx + 1}. ${it.product_name || 'Barang'} (${it.qty || 1} ${it.unit || 'Pcs'}) = ${formatRupiah(it.subtotal || 0)}`
+          )
+          .join('\n')
+      : '  - (Belum ada rincian barang)';
 
   // Format payment methods
   let methodsList: PaymentMethodItem[] = [];
@@ -782,16 +794,19 @@ export function buildWhatsAppInvoiceMessage(
     methodsList = data.payment_methods;
   } else if (data.settings?.payment_methods) {
     try {
-      methodsList =
+      const parsed =
         typeof data.settings.payment_methods === 'string'
           ? JSON.parse(data.settings.payment_methods)
           : data.settings.payment_methods;
+      if (Array.isArray(parsed)) {
+        methodsList = parsed;
+      }
     } catch {
       methodsList = [];
     }
   }
 
-  const activeMethods = methodsList.filter((m) => m.is_active);
+  const activeMethods = Array.isArray(methodsList) ? methodsList.filter((m) => m && m.is_active) : [];
   let paymentText = '';
   if (activeMethods.length > 0) {
     paymentText = activeMethods
@@ -810,7 +825,8 @@ export function buildWhatsAppInvoiceMessage(
   }
 
   // Generate public download link (interactive web view & direct PDF link)
-  const cleanInvNumber = encodeURIComponent(data.invoice_number);
+  const safeNumber = data.invoice_number || 'INV';
+  const cleanInvNumber = encodeURIComponent(safeNumber);
   const idQuery = data.id ? `&id=${data.id}` : '';
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const downloadLink =
@@ -851,12 +867,12 @@ Website: {website_perusahaan}`;
   const template = templateOverride || data.settings?.whatsapp_template || defaultTemplate;
   const notesText = data.notes ? `📝 *Catatan:* ${data.notes}` : '';
 
-  const result = template
-    .replace(/\{nomor_invoice\}/g, data.invoice_number || '')
+  const result = (template || defaultTemplate)
+    .replace(/\{nomor_invoice\}/g, safeNumber)
     .replace(/\{nama_pelanggan\}/g, data.customer_name || 'Pelanggan')
-    .replace(/\{tanggal\}/g, formatDateIndo(data.activity_date))
+    .replace(/\{tanggal\}/g, formatDateIndo(data.activity_date || ''))
     .replace(/\{jatuh_tempo\}/g, data.due_date ? formatDateIndo(data.due_date) : '-')
-    .replace(/\{total\}/g, formatRupiah(data.total_amount))
+    .replace(/\{total\}/g, formatRupiah(data.total_amount || 0))
     .replace(/\{status\}/g, statusStr)
     .replace(/\{rincian_barang\}/g, itemsList)
     .replace(/\{metode_pembayaran\}/g, paymentText)
@@ -878,7 +894,7 @@ export function openWhatsAppInvoice(
   phoneOverride?: string,
   customMessageText?: string
 ) {
-  let phone = phoneOverride || data.customer_phone || '';
+  let phone = phoneOverride || data?.customer_phone || '';
   phone = phone.replace(/[^0-9]/g, '');
   if (phone.startsWith('0')) {
     phone = '62' + phone.slice(1);
@@ -896,7 +912,11 @@ export function openWhatsAppInvoice(
   link.rel = 'noopener noreferrer';
   document.body.appendChild(link);
   link.click();
-  setTimeout(() => document.body.removeChild(link), 300);
+  setTimeout(() => {
+    if (document.body.contains(link)) {
+      document.body.removeChild(link);
+    }
+  }, 300);
 }
 
 // Share PDF file directly via Web Share API
@@ -905,16 +925,16 @@ export async function shareInvoicePdfDirectly(data: InvoicePDFData): Promise<boo
     const { blob, filename } = await generateInvoicePDFBlob(data);
     const file = new File([blob], filename, { type: 'application/pdf' });
 
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
       await navigator.share({
-        title: `Invoice ${data.invoice_number} - Info Papandayan`,
-        text: `Faktur resmi Info Papandayan No ${data.invoice_number} untuk ${data.customer_name}`,
+        title: `Invoice ${data?.invoice_number || 'INV'} - Info Papandayan`,
+        text: `Faktur resmi Info Papandayan No ${data?.invoice_number || 'INV'} untuk ${data?.customer_name || 'Pelanggan'}`,
         files: [file],
       });
       return true;
     }
   } catch (err: any) {
-    if (err.name !== 'AbortError') {
+    if (err?.name !== 'AbortError') {
       console.warn('Share not completed:', err);
     }
   }

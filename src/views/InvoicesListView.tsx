@@ -154,6 +154,20 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
     }
   };
 
+  const handleDeleteFromPreview = async (id: number) => {
+    const res = await apiRequest(`/api/invoices/${id}`, {
+      method: 'DELETE',
+    });
+    if (res.success) {
+      toast.success(res.message || 'Invoice berhasil dihapus dan stok barang dikembalikan');
+      setIsPreviewOpen(false);
+      setPreviewData(null);
+      loadInvoices();
+    } else {
+      toast.error(res.message || 'Gagal menghapus invoice');
+    }
+  };
+
   // Bulk selection handlers
   const isAllCurrentSelected = invoices.length > 0 && invoices.every((inv) => selectedInvoiceIds.includes(inv.id));
   const isSomeSelected = invoices.some((inv) => selectedInvoiceIds.includes(inv.id));
@@ -559,11 +573,16 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
       </div>
 
       {/* Modal Preview */}
-      {previewData && (
+      {previewData && isPreviewOpen && (
         <InvoicePreviewModal
           isOpen={isPreviewOpen}
-          onClose={() => setIsPreviewOpen(false)}
+          onClose={() => {
+            setIsPreviewOpen(false);
+            setPreviewData(null);
+          }}
           data={previewData}
+          invoiceId={previewData.id}
+          onDeleteInvoice={handleDeleteFromPreview}
         />
       )}
 
