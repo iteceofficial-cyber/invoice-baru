@@ -214,6 +214,15 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                   src={data.settings?.header_image_url || '/invoice-header.svg'}
                   alt="Invoice Header"
                   className="w-full h-auto object-contain block"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (!target.dataset.hasFailed) {
+                      target.dataset.hasFailed = 'true';
+                      target.src = '/invoice-header.svg';
+                    } else {
+                      target.style.display = 'none';
+                    }
+                  }}
                 />
               </div>
 
@@ -401,6 +410,15 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                 src={data.settings?.footer_image_url || '/invoice-footer.svg'}
                 alt="Invoice Footer"
                 className="w-full h-auto object-contain block"
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (!target.dataset.hasFailed) {
+                    target.dataset.hasFailed = 'true';
+                    target.src = '/invoice-footer.svg';
+                  } else {
+                    target.style.display = 'none';
+                  }
+                }}
               />
             </div>
           </div>

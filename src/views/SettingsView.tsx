@@ -120,16 +120,78 @@ export const SettingsView: React.FC = () => {
       toast.error('File harus berformat gambar (.png, .jpg, .jpeg, .svg, .webp)');
       return;
     }
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
-      if (type === 'header') {
-        setInvoice((prev) => ({ ...prev, header_image_url: dataUrl }));
-        toast.success('Gambar Kop Header berhasil dimuat! Klik "Simpan Kop Header & Footer" untuk menerapkan.');
-      } else {
-        setInvoice((prev) => ({ ...prev, footer_image_url: dataUrl }));
-        toast.success('Gambar Kop Footer berhasil dimuat! Klik "Simpan Kop Header & Footer" untuk menerapkan.');
+      if (!dataUrl) {
+        toast.error('Gagal membaca file gambar');
+        return;
       }
+
+      // If SVG, process directly
+      if (file.name.endsWith('.svg') || file.type.includes('svg')) {
+        if (type === 'header') {
+          setInvoice((prev) => ({ ...prev, header_image_url: dataUrl }));
+          toast.success('Gambar Kop Header SVG berhasil dimuat! Klik "Simpan Kop Header & Footer" untuk menerapkan.');
+        } else {
+          setInvoice((prev) => ({ ...prev, footer_image_url: dataUrl }));
+          toast.success('Gambar Kop Footer SVG berhasil dimuat! Klik "Simpan Kop Header & Footer" untuk menerapkan.');
+        }
+        return;
+      }
+
+      // For raster images (PNG, JPG, WEBP), downscale large images safely
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxW = 1600;
+          const maxH = 600;
+          let targetW = img.width;
+          let targetH = img.height;
+
+          if (targetW > maxW || targetH > maxH) {
+            const ratio = Math.min(maxW / targetW, maxH / targetH);
+            targetW = Math.round(targetW * ratio);
+            targetH = Math.round(targetH * ratio);
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, targetW, targetH);
+            const optimizedDataUrl = canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.92);
+            if (type === 'header') {
+              setInvoice((prev) => ({ ...prev, header_image_url: optimizedDataUrl }));
+              toast.success(`Gambar Kop Header (${targetW}x${targetH}px) siap! Klik "Simpan Kop Header & Footer".`);
+            } else {
+              setInvoice((prev) => ({ ...prev, footer_image_url: optimizedDataUrl }));
+              toast.success(`Gambar Kop Footer (${targetW}x${targetH}px) siap! Klik "Simpan Kop Header & Footer".`);
+            }
+          } else {
+            if (type === 'header') {
+              setInvoice((prev) => ({ ...prev, header_image_url: dataUrl }));
+            } else {
+              setInvoice((prev) => ({ ...prev, footer_image_url: dataUrl }));
+            }
+          }
+        } catch {
+          if (type === 'header') {
+            setInvoice((prev) => ({ ...prev, header_image_url: dataUrl }));
+          } else {
+            setInvoice((prev) => ({ ...prev, footer_image_url: dataUrl }));
+          }
+        }
+      };
+      img.onerror = () => {
+        toast.error('File gambar tidak dapat dibaca atau rusak. Silakan pilih gambar yang valid.');
+      };
+      img.src = dataUrl;
+    };
+    reader.onerror = () => {
+      toast.error('Gagal membaca data dari perangkat');
     };
     reader.readAsDataURL(file);
   };
@@ -610,7 +672,13 @@ export const SettingsView: React.FC = () => {
                   alt="Pratinjau Kop Header"
                   className="max-h-28 w-auto object-contain rounded-lg"
                   onError={(e) => {
-                    (e.target as HTMLImageElement).src = '/invoice-header.svg';
+                    const target = e.currentTarget;
+                    if (!target.dataset.hasFailed) {
+                      target.dataset.hasFailed = 'true';
+                      target.src = '/invoice-header.svg';
+                    } else {
+                      target.style.display = 'none';
+                    }
                   }}
                 />
               ) : (
@@ -691,7 +759,13 @@ export const SettingsView: React.FC = () => {
                   alt="Pratinjau Kop Footer"
                   className="max-h-28 w-auto object-contain rounded-lg"
                   onError={(e) => {
-                    (e.target as HTMLImageElement).src = '/invoice-footer.svg';
+                    const target = e.currentTarget;
+                    if (!target.dataset.hasFailed) {
+                      target.dataset.hasFailed = 'true';
+                      target.src = '/invoice-footer.svg';
+                    } else {
+                      target.style.display = 'none';
+                    }
                   }}
                 />
               ) : (
@@ -767,6 +841,15 @@ export const SettingsView: React.FC = () => {
                   src={invoice.header_image_url || '/invoice-header.svg'}
                   alt="Header Preview"
                   className="w-full max-h-20 object-contain mx-auto"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (!target.dataset.hasFailed) {
+                      target.dataset.hasFailed = 'true';
+                      target.src = '/invoice-header.svg';
+                    } else {
+                      target.style.display = 'none';
+                    }
+                  }}
                 />
               </div>
 
@@ -807,6 +890,15 @@ export const SettingsView: React.FC = () => {
                   src={invoice.footer_image_url || '/invoice-footer.svg'}
                   alt="Footer Preview"
                   className="w-full max-h-16 object-contain mx-auto"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (!target.dataset.hasFailed) {
+                      target.dataset.hasFailed = 'true';
+                      target.src = '/invoice-footer.svg';
+                    } else {
+                      target.style.display = 'none';
+                    }
+                  }}
                 />
               </div>
             </div>

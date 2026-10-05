@@ -1,27 +1,29 @@
 import * as XLSX from 'xlsx';
 
-function s2ab(s: string): ArrayBuffer {
-  const buf = new ArrayBuffer(s.length);
-  const view = new Uint8Array(buf);
-  for (let i = 0; i < s.length; i++) {
-    view[i] = s.charCodeAt(i) & 0xff;
-  }
-  return buf;
-}
-
 function triggerDownload(workbook: XLSX.WorkBook, filename: string) {
-  const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
-  const blob = new Blob([s2ab(wbout)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 300);
+  try {
+    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 400);
+  } catch (err) {
+    console.error('Trigger download error, falling back to XLSX.writeFile:', err);
+    try {
+      XLSX.writeFile(workbook, filename);
+    } catch (e2) {
+      console.error('Fatal XLSX export error:', e2);
+    }
+  }
 }
 
 // 1. Download Product Import Template
@@ -247,36 +249,85 @@ export function downloadMonthlyReportExcel({ yearMonth, items, summary }: Monthl
 
 // 3. Export Products List to Excel
 export function exportProductsListExcel(products: any[]) {
-  const exportData = products.map((p, idx) => ({
-    No: idx + 1,
-    'Kode Produk': p.code,
-    'Nama Produk': p.name,
-    Kategori: p.category_name || '-',
-    Satuan: p.unit,
-    'Harga (Rp)': p.price,
-    'Stok Saat Ini': p.stock,
-    Status: p.status === 'active' ? 'Aktif' : 'Nonaktif',
-    Keterangan: p.description || '',
-  }));
+  if (!products || products.length === 0) {
+    throw new Error('Tidak ada data produk yang dapat diekspor');
+  }
+
+  const exportData = products.map((p, idx) => {
+    const rawPrice = typeof p.price === 'number' ? p.price : parseFloat(String(p.price).replace(/[^0-9.-]/g, '')) || 0;
+    const rawStock = typeof p.stock === 'number' ? p.stock : parseInt(String(p.stock).replace(/[^0-9-]/g, ''), 10) || 0;
+
+    return {
+      No: idx + 1,
+      'Kode Produk': String(p.code || '').trim(),
+      'Nama Produk': String(p.name || '').trim(),
+      Kategori: p.category_name || p.category || '-',
+      Satuan: p.unit || 'Pcs',
+      'Harga Jual (Rp)': rawPrice,
+      'Stok Saat Ini': rawStock,
+      Status: p.status === 'active' ? 'Aktif' : 'Nonaktif',
+      Keterangan: p.description || '',
+    };
+  });
 
   const worksheet = XLSX.utils.json_to_sheet(exportData);
   worksheet['!cols'] = [
-    { wch: 6 },
-    { wch: 14 },
-    { wch: 35 },
-    { wch: 20 },
-    { wch: 10 },
-    { wch: 16 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 40 },
+    { wch: 6 },  // No
+    { wch: 16 }, // Kode Produk
+    { wch: 40 }, // Nama Produk
+    { wch: 22 }, // Kategori
+    { wch: 12 }, // Satuan
+    { wch: 18 }, // Harga Jual (Rp)
+    { wch: 14 }, // Stok Saat Ini
+    { wch: 14 }, // Status
+    { wch: 50 }, // Keterangan
   ];
 
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Data Produk');
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Katalog Produk');
 
   const today = new Date().toISOString().split('T')[0];
-  triggerDownload(workbook, `Daftar-Produk-${today}.xlsx`);
+  triggerDownload(workbook, `Katalog-Produk-${today}.xlsx`);
+}
+
+// 3b. Export Products List to CSV (with UTF-8 BOM for perfect Excel/Spreadsheet compatibility)
+export function exportProductsListCSV(products: any[]) {
+  if (!products || products.length === 0) {
+    throw new Error('Tidak ada data produk yang dapat diekspor');
+  }
+
+  const exportData = products.map((p, idx) => {
+    const rawPrice = typeof p.price === 'number' ? p.price : parseFloat(String(p.price).replace(/[^0-9.-]/g, '')) || 0;
+    const rawStock = typeof p.stock === 'number' ? p.stock : parseInt(String(p.stock).replace(/[^0-9-]/g, ''), 10) || 0;
+
+    return {
+      No: idx + 1,
+      'Kode Produk': String(p.code || '').trim(),
+      'Nama Produk': String(p.name || '').trim(),
+      Kategori: p.category_name || p.category || '-',
+      Satuan: p.unit || 'Pcs',
+      'Harga Jual (Rp)': rawPrice,
+      'Stok Saat Ini': rawStock,
+      Status: p.status === 'active' ? 'Aktif' : 'Nonaktif',
+      Keterangan: p.description || '',
+    };
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(exportData);
+  const csvText = XLSX.utils.sheet_to_csv(worksheet);
+
+  // Prefix with UTF-8 BOM (\uFEFF) so Excel and third-party apps recognize all UTF-8 characters
+  const blob = new Blob(['\uFEFF' + csvText], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Katalog-Produk-${new Date().toISOString().split('T')[0]}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 400);
 }
 
 // 4. Export Customers to Excel

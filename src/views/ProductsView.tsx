@@ -19,6 +19,8 @@ import {
   ArrowUpDown,
   Save,
   CheckSquare,
+  FileText,
+  RotateCcw,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, formatNumber } from '../lib/utils.ts';
@@ -26,6 +28,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import {
   downloadProductImportTemplate,
   exportProductsListExcel,
+  exportProductsListCSV,
   parseProductImportExcel,
 } from '../lib/excelHelper.ts';
 
@@ -66,6 +69,7 @@ export const ProductsView: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('all');
@@ -74,6 +78,10 @@ export const ProductsView: React.FC = () => {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
+  const [isExporting, setIsExporting] = useState<'excel' | 'csv' | null>(null);
+
+  // Request counter to avoid race conditions with fast typing or filters
+  const reqIdRef = useRef(0);
 
   // Modals
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -113,36 +121,65 @@ export const ProductsView: React.FC = () => {
 
   const toast = useToast();
 
+  // Debounce search input by 250ms to prevent rapid query bursts & race conditions
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const loadCategories = async () => {
-    const res = await apiRequest('/api/categories');
-    if (res.success && res.data) {
-      setCategories(res.data);
+    try {
+      const res = await apiRequest('/api/categories');
+      if (res.success && res.data) {
+        setCategories(res.data);
+      }
+    } catch (e) {
+      console.error('Error loading categories:', e);
     }
   };
 
   const loadProducts = async () => {
+    const currentReqId = ++reqIdRef.current;
     setLoading(true);
-    const query = new URLSearchParams({
-      search,
-      category_id: selectedCategory,
-      status: selectedStatus,
-      sort_by: sortBy,
-      sort_dir: sortDir,
-      page: page.toString(),
-      limit: '10',
-    });
 
-    const res = await apiRequest(`/api/products?${query.toString()}`);
-    if (res.success && res.data) {
-      setProducts(res.data);
-      if (res.pagination) {
-        setTotalPages(res.pagination.totalPages || 1);
-        setTotalItems(res.pagination.total || 0);
+    try {
+      const query = new URLSearchParams({
+        search: debouncedSearch.trim(),
+        category_id: selectedCategory,
+        status: selectedStatus,
+        sort_by: sortBy,
+        sort_dir: sortDir,
+        page: page.toString(),
+        limit: '10',
+      });
+
+      const res = await apiRequest(`/api/products?${query.toString()}`);
+      if (currentReqId !== reqIdRef.current) return; // Discard outdated response
+
+      if (res.success && Array.isArray(res.data)) {
+        setProducts(res.data);
+        if (res.pagination) {
+          const tp = res.pagination.totalPages || 1;
+          setTotalPages(tp);
+          setTotalItems(res.pagination.total || 0);
+          if (page > tp && tp > 0) {
+            setPage(1);
+          }
+        }
+      } else {
+        toast.error(res.message || 'Gagal memuat produk');
       }
-    } else {
-      toast.error(res.message || 'Gagal memuat produk');
+    } catch (err: any) {
+      if (currentReqId === reqIdRef.current) {
+        toast.error('Gagal memuat daftar produk: ' + (err.message || 'Koneksi terputus'));
+      }
+    } finally {
+      if (currentReqId === reqIdRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -151,7 +188,7 @@ export const ProductsView: React.FC = () => {
 
   useEffect(() => {
     loadProducts();
-  }, [search, selectedCategory, selectedStatus, sortBy, sortDir, page]);
+  }, [debouncedSearch, selectedCategory, selectedStatus, sortBy, sortDir, page]);
 
   const handleOpenAdd = () => {
     setEditingProduct(null);
@@ -266,10 +303,12 @@ export const ProductsView: React.FC = () => {
 
   const handleSelectAllCatalog = async () => {
     try {
-      const res = await apiRequest('/api/products?limit=10000');
-      if (res.success && res.data) {
+      const res = await apiRequest('/api/products/all');
+      if (res.success && Array.isArray(res.data)) {
         setSelectedProductIds(res.data.map((p: Product) => p.id));
-        toast.info(`Semua ${res.data.length} produk di katalog telah dipilih`);
+        toast.info(`Seluruh ${res.data.length} produk di katalog telah dipilih`);
+      } else {
+        setSelectedProductIds(products.map((p) => p.id));
       }
     } catch {
       setSelectedProductIds(products.map((p) => p.id));
@@ -295,18 +334,41 @@ export const ProductsView: React.FC = () => {
     }
   };
 
-  // Export products to excel
+  // Export products to Excel (.xlsx) with all catalog items
   const handleExportExcel = async () => {
+    setIsExporting('excel');
     try {
-      const res = await apiRequest('/api/products?limit=2000');
-      if (res.success && res.data && res.data.length > 0) {
-        exportProductsListExcel(res.data);
-      } else {
-        exportProductsListExcel(products);
+      const res = await apiRequest('/api/products?all=true');
+      const allItems = res.success && Array.isArray(res.data) && res.data.length > 0 ? res.data : products;
+      if (allItems.length === 0) {
+        toast.error('Tidak ada produk yang dapat diekspor');
+        return;
       }
-      toast.success('Daftar produk berhasil diekspor ke Excel');
-    } catch {
-      exportProductsListExcel(products);
+      exportProductsListExcel(allItems);
+      toast.success(`Berhasil mengekspor ${allItems.length} produk ke format Excel (.xlsx)`);
+    } catch (err: any) {
+      toast.error('Gagal mengekspor produk: ' + (err.message || 'Terjadi kesalahan'));
+    } finally {
+      setIsExporting(null);
+    }
+  };
+
+  // Export products to CSV (.csv) with UTF-8 BOM
+  const handleExportCSV = async () => {
+    setIsExporting('csv');
+    try {
+      const res = await apiRequest('/api/products?all=true');
+      const allItems = res.success && Array.isArray(res.data) && res.data.length > 0 ? res.data : products;
+      if (allItems.length === 0) {
+        toast.error('Tidak ada produk yang dapat diekspor');
+        return;
+      }
+      exportProductsListCSV(allItems);
+      toast.success(`Berhasil mengekspor ${allItems.length} produk ke format CSV (.csv)`);
+    } catch (err: any) {
+      toast.error('Gagal mengekspor produk ke CSV: ' + (err.message || 'Terjadi kesalahan'));
+    } finally {
+      setIsExporting(null);
     }
   };
 
@@ -406,11 +468,30 @@ export const ProductsView: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={handleExportExcel}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition cursor-pointer"
-            title="Export ke Excel"
+            disabled={isExporting !== null}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-emerald-200 bg-emerald-50/70 hover:bg-emerald-100/70 text-emerald-800 text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50"
+            title="Export seluruh katalog ke file Excel (.xlsx)"
           >
-            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-            <span>Export Excel</span>
+            {isExporting === 'excel' ? (
+              <div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            )}
+            <span>{isExporting === 'excel' ? 'Mengekspor...' : 'Export Excel'}</span>
+          </button>
+
+          <button
+            onClick={handleExportCSV}
+            disabled={isExporting !== null}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50"
+            title="Export seluruh katalog ke file CSV (.csv)"
+          >
+            {isExporting === 'csv' ? (
+              <div className="w-4 h-4 border-2 border-slate-700 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <FileText className="w-4 h-4 text-slate-500" />
+            )}
+            <span>{isExporting === 'csv' ? 'Mengekspor...' : 'Export CSV'}</span>
           </button>
 
           <button
@@ -578,6 +659,7 @@ export const ProductsView: React.FC = () => {
                 </th>
                 <th className="py-3.5 px-4 font-semibold">Kode</th>
                 <th className="py-3.5 px-5 font-semibold">Nama Produk</th>
+                <th className="py-3.5 px-4 font-semibold">Kategori</th>
                 <th className="py-3.5 px-4 font-semibold">Satuan</th>
                 <th className="py-3.5 px-4 font-semibold text-right">Harga Jual</th>
                 <th className="py-3.5 px-4 font-semibold text-center">Stok</th>
@@ -588,7 +670,7 @@ export const ProductsView: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                  <td colSpan={9} className="py-12 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
                       <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
                       <span>Memuat data produk...</span>
@@ -597,12 +679,27 @@ export const ProductsView: React.FC = () => {
                 </tr>
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                  <td colSpan={9} className="py-12 text-center text-slate-400">
                     <Package className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                     <p className="font-semibold text-slate-600">Tidak ada produk ditemukan</p>
                     <p className="text-xs text-slate-400 mt-0.5">
                       Coba ubah kata kunci pencarian atau tambah produk baru
                     </p>
+                    {(search || selectedCategory || selectedStatus !== 'all') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearch('');
+                          setSelectedCategory('');
+                          setSelectedStatus('all');
+                          setPage(1);
+                        }}
+                        className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer shadow-xs transition"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Reset Semua Filter & Pencarian</span>
+                      </button>
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -636,6 +733,11 @@ export const ProductsView: React.FC = () => {
                             {p.description}
                           </div>
                         )}
+                      </td>
+                      <td className="py-4 px-4">
+                        <span className="inline-block px-2.5 py-0.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200/60 max-w-[130px] truncate" title={p.category_name || '-'}>
+                          {p.category_name || '-'}
+                        </span>
                       </td>
                       <td className="py-4 px-4 text-slate-600 text-xs font-medium">
                         {p.unit}

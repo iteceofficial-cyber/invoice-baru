@@ -300,6 +300,15 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
               src={invoiceData.settings?.header_image_url || '/invoice-header.svg'}
               alt="Header Info Papandayan"
               className="w-full h-auto object-contain block max-h-48"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (!target.dataset.hasFailed) {
+                  target.dataset.hasFailed = 'true';
+                  target.src = '/invoice-header.svg';
+                } else {
+                  target.style.display = 'none';
+                }
+              }}
             />
           </div>
 
@@ -518,6 +527,15 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
               src={invoiceData.settings?.footer_image_url || '/invoice-footer.svg'}
               alt="Footer Info Papandayan"
               className="w-full h-auto object-contain block max-h-48"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (!target.dataset.hasFailed) {
+                  target.dataset.hasFailed = 'true';
+                  target.src = '/invoice-footer.svg';
+                } else {
+                  target.style.display = 'none';
+                }
+              }}
             />
           </div>
         </div>

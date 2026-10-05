@@ -271,27 +271,31 @@ apiRouter.get('/dashboard/stats', requireAuth, (_req: AuthenticatedRequest, res:
 
 apiRouter.get('/products', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { search, category_id, status, sort_by = 'id', sort_dir = 'DESC', page = '1', limit = '10' } = req.query;
+    const { search, category_id, status, sort_by = 'id', sort_dir = 'DESC', page = '1', limit = '10', all } = req.query;
 
-    const pageNum = Math.max(1, parseInt(page as string) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string) || 10));
-    const offset = (pageNum - 1) * limitNum;
+    const isAll = all === 'true' || all === '1' || limit === 'all' || limit === '0' || limit === 'all_catalog';
+    const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
+    const limitNum = isAll ? 50000 : Math.min(10000, Math.max(1, parseInt(limit as string, 10) || 10));
+    const offset = isAll ? 0 : (pageNum - 1) * limitNum;
 
     let whereClauses: string[] = [];
     let params: any[] = [];
 
-    if (search) {
+    if (search && typeof search === 'string' && search.trim()) {
       whereClauses.push('(p.name LIKE ? OR p.code LIKE ? OR p.description LIKE ?)');
-      const s = `%${(search as string).trim()}%`;
+      const s = `%${search.trim()}%`;
       params.push(s, s, s);
     }
 
-    if (category_id) {
-      whereClauses.push('p.category_id = ?');
-      params.push(category_id);
+    if (category_id && category_id !== 'all' && category_id !== '0' && category_id !== '') {
+      const parsedCatId = parseInt(category_id as string, 10);
+      if (!isNaN(parsedCatId) && parsedCatId > 0) {
+        whereClauses.push('p.category_id = ?');
+        params.push(parsedCatId);
+      }
     }
 
-    if (status && status !== 'all') {
+    if (status && status !== 'all' && status !== '') {
       whereClauses.push('p.status = ?');
       params.push(status);
     }
@@ -328,24 +332,58 @@ apiRouter.get('/products', requireAuth, (req: AuthenticatedRequest, res: Respons
       LEFT JOIN categories c ON p.category_id = c.id
       ${whereSql}
       ORDER BY ${sortCol} ${sortDirection}
-      LIMIT ? OFFSET ?
+      ${isAll ? '' : 'LIMIT ? OFFSET ?'}
     `;
-    const products = queryAll(dataQuery, [...params, limitNum, offset]);
+    const queryParams = isAll ? params : [...params, limitNum, offset];
+    const products = queryAll(dataQuery, queryParams);
 
     return res.json({
       success: true,
       data: products,
       pagination: {
-        page: pageNum,
-        limit: limitNum,
+        page: isAll ? 1 : pageNum,
+        limit: isAll ? total : limitNum,
         total,
-        totalPages: Math.ceil(total / limitNum),
+        totalPages: isAll ? 1 : Math.ceil(total / limitNum) || 1,
       },
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal memuat produk: ' + err.message });
   }
 });
+
+// Get all products without pagination for bulk export and selection
+apiRouter.get('/products/all', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const products = queryAll(`
+      SELECT p.*, c.name as category_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      ORDER BY p.id DESC
+    `);
+    return res.json({ success: true, data: products, total: products.length });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal memuat katalog produk lengkap: ' + err.message });
+  }
+});
+
+// Helper to sanitize price and stock inputs from form / Indonesian formats
+function sanitizePrice(val: any): number {
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  const str = String(val || '')
+    .replace(/[^0-9,.-]/g, '')
+    .replace(/\./g, '')
+    .replace(',', '.');
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : Math.max(0, num);
+}
+
+function sanitizeStock(val: any): number {
+  if (typeof val === 'number') return isNaN(val) ? 0 : Math.floor(val);
+  const str = String(val || '').replace(/[^0-9-]/g, '');
+  const num = parseInt(str, 10);
+  return isNaN(num) ? 0 : Math.max(0, num);
+}
 
 // Create product
 apiRouter.post('/products', requireAuth, (req: AuthenticatedRequest, res: Response) => {
@@ -356,26 +394,21 @@ apiRouter.post('/products', requireAuth, (req: AuthenticatedRequest, res: Respon
       return res.status(400).json({ success: false, message: 'Kode produk dan nama produk wajib diisi' });
     }
 
-    const numPrice = parseFloat(price);
-    const numStock = parseInt(stock);
-
-    if (isNaN(numPrice) || numPrice < 0) {
-      return res.status(400).json({ success: false, message: 'Harga produk harus berupa angka non-negatif' });
-    }
-    if (isNaN(numStock) || numStock < 0) {
-      return res.status(400).json({ success: false, message: 'Stok produk harus berupa angka non-negatif' });
-    }
+    const numPrice = sanitizePrice(price);
+    const numStock = sanitizeStock(stock);
 
     // Check duplicate code
     const existing = queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?)', [code.trim()]);
     if (existing) {
-      return res.status(400).json({ success: false, message: `Kode produk '${code}' sudah digunakan oleh produk lain` });
+      return res.status(400).json({ success: false, message: `Kode produk '${code.trim()}' sudah digunakan oleh produk lain` });
     }
+
+    const catId = category_id ? parseInt(category_id, 10) || null : null;
 
     const result = runQuery(
       `INSERT INTO products (code, name, category_id, unit, price, stock, status, description, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
-      [code.trim().toUpperCase(), name.trim(), category_id || null, unit?.trim() || 'Pcs', numPrice, numStock, status, description?.trim() || '']
+      [code.trim().toUpperCase(), name.trim(), catId, unit?.trim() || 'Pcs', numPrice, numStock, status, description?.trim() || '']
     );
 
     logActivity(
@@ -411,27 +444,22 @@ apiRouter.put('/products/:id', requireAuth, (req: AuthenticatedRequest, res: Res
       return res.status(400).json({ success: false, message: 'Kode produk dan nama produk wajib diisi' });
     }
 
-    const numPrice = parseFloat(price);
-    const numStock = parseInt(stock);
-
-    if (isNaN(numPrice) || numPrice < 0) {
-      return res.status(400).json({ success: false, message: 'Harga produk harus berupa angka non-negatif' });
-    }
-    if (isNaN(numStock) || numStock < 0) {
-      return res.status(400).json({ success: false, message: 'Stok produk harus berupa angka non-negatif' });
-    }
+    const numPrice = sanitizePrice(price);
+    const numStock = sanitizeStock(stock);
 
     // Check duplicate code on other products
     const duplicate = queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?) AND id != ?', [code.trim(), id]);
     if (duplicate) {
-      return res.status(400).json({ success: false, message: `Kode produk '${code}' sudah digunakan oleh produk lain` });
+      return res.status(400).json({ success: false, message: `Kode produk '${code.trim()}' sudah digunakan oleh produk lain` });
     }
+
+    const catId = category_id ? parseInt(category_id, 10) || null : null;
 
     runQuery(
       `UPDATE products
        SET code = ?, name = ?, category_id = ?, unit = ?, price = ?, stock = ?, status = ?, description = ?, updated_at = datetime('now', 'localtime')
        WHERE id = ?`,
-      [code.trim().toUpperCase(), name.trim(), category_id || null, unit?.trim() || 'Pcs', numPrice, numStock, status, description?.trim() || '', id]
+      [code.trim().toUpperCase(), name.trim(), catId, unit?.trim() || 'Pcs', numPrice, numStock, status, description?.trim() || '', id]
     );
 
     logActivity(

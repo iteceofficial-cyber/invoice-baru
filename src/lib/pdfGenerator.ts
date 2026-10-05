@@ -158,6 +158,19 @@ async function loadRasterOrSvgAsPng(url: string, targetWidth = 1200, targetHeigh
   }
 
   return new Promise(async (resolve) => {
+    let resolved = false;
+    const safeResolve = (val: string) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(val);
+      }
+    };
+
+    // Safety timeout: Never hang PDF generation for more than 3 seconds on image loading
+    const timeoutTimer = setTimeout(() => {
+      safeResolve('');
+    }, 3000);
+
     try {
       let finalSrc = url;
 
@@ -181,6 +194,7 @@ async function loadRasterOrSvgAsPng(url: string, targetWidth = 1200, targetHeigh
       img.crossOrigin = 'anonymous';
 
       img.onload = () => {
+        clearTimeout(timeoutTimer);
         try {
           const canvas = document.createElement('canvas');
           canvas.width = targetWidth;
@@ -190,19 +204,23 @@ async function loadRasterOrSvgAsPng(url: string, targetWidth = 1200, targetHeigh
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, targetWidth, targetHeight);
             ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-            resolve(canvas.toDataURL('image/png'));
+            safeResolve(canvas.toDataURL('image/png'));
           } else {
-            resolve('');
+            safeResolve('');
           }
         } catch {
-          resolve('');
+          safeResolve('');
         }
       };
 
-      img.onerror = () => resolve('');
+      img.onerror = () => {
+        clearTimeout(timeoutTimer);
+        safeResolve('');
+      };
       img.src = finalSrc;
     } catch {
-      resolve('');
+      clearTimeout(timeoutTimer);
+      safeResolve('');
     }
   });
 }
