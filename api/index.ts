@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDb } from '../server/db.ts';
+import { getDb, checkAndSyncFromFirestore } from '../server/db.ts';
 import { apiRouter } from '../server/routes.ts';
 
 const app = express();
@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
-// Initialize DB before handling requests
+// Initialize DB and ensure Cloud Firestore sync before handling requests
 let dbInitPromise: Promise<any> | null = null;
 app.use(async (_req, res, next) => {
   try {
@@ -16,6 +16,7 @@ app.use(async (_req, res, next) => {
       dbInitPromise = getDb();
     }
     await dbInitPromise;
+    await checkAndSyncFromFirestore();
     next();
   } catch (e: any) {
     console.error('[Vercel Serverless] Failed to initialize database:', e);

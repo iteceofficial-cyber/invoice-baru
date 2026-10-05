@@ -12,6 +12,7 @@ import {
   DEFAULT_PAYMENT_METHODS,
   isCloudPersistenceActive,
   syncToFirestore,
+  checkAndSyncFromFirestore,
 } from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
 import jsPDF from 'jspdf';
@@ -24,6 +25,14 @@ const upload = multer({
 });
 
 export const apiRouter = express.Router();
+
+// Synchronize database from Cloud Firestore if another device made an update
+apiRouter.use(async (_req, _res, next) => {
+  try {
+    await checkAndSyncFromFirestore();
+  } catch (e) {}
+  next();
+});
 
 // ==========================================
 // CLOUD PERSISTENCE & SYNC ROUTES

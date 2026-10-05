@@ -139,9 +139,101 @@ function getWasmBinary(): Buffer | undefined {
 
 let isSavingToFirestore = false;
 let pendingSave = false;
+let lastCheckTime = 0;
+let currentDbVersion = 0;
+let sqlJsEngine: any = null;
 
 export function isCloudPersistenceActive(): boolean {
   return !!firestoreDb;
+}
+
+export async function syncCollectionsToFirestore(): Promise<void> {
+  if (!dbInstance || !firestoreDb) return;
+  try {
+    // 1. Sync Products
+    const prods = queryAll('SELECT * FROM products');
+    for (const p of prods) {
+      await setDoc(doc(firestoreDb, 'products', String(p.id)), {
+        ...p,
+        id: String(p.id),
+        price: Number(p.price),
+        stock: Number(p.stock),
+      });
+    }
+
+    // 2. Sync Customers
+    const custs = queryAll('SELECT * FROM customers');
+    for (const c of custs) {
+      await setDoc(doc(firestoreDb, 'customers', String(c.id)), {
+        ...c,
+        id: String(c.id),
+      });
+    }
+
+    // 3. Sync Categories
+    const cats = queryAll('SELECT * FROM categories');
+    for (const cat of cats) {
+      await setDoc(doc(firestoreDb, 'categories', String(cat.id)), {
+        ...cat,
+        id: String(cat.id),
+      });
+    }
+
+    // 4. Sync Invoices (with items)
+    const invs = queryAll('SELECT * FROM invoices');
+    for (const inv of invs) {
+      const items = queryAll('SELECT * FROM invoice_items WHERE invoice_id = ?', [inv.id]);
+      await setDoc(doc(firestoreDb, 'invoices', String(inv.id)), {
+        ...inv,
+        id: String(inv.id),
+        items: JSON.stringify(items),
+        subtotal: Number(inv.subtotal),
+        total_amount: Number(inv.total_amount),
+      });
+    }
+
+    // 5. Sync Settings
+    const comp = queryOne('SELECT * FROM company_settings WHERE id = 1');
+    if (comp) {
+      await setDoc(doc(firestoreDb, 'settings', 'company'), comp);
+    }
+    const invSet = queryOne('SELECT * FROM invoice_settings WHERE id = 1');
+    if (invSet) {
+      await setDoc(doc(firestoreDb, 'settings', 'invoice'), invSet);
+    }
+  } catch (err) {
+    console.warn('[Firebase Cloud] Sinkronisasi koleksi parsial:', err);
+  }
+}
+
+export async function checkAndSyncFromFirestore(): Promise<void> {
+  if (!firestoreDb) return;
+  const now = Date.now();
+  if (now - lastCheckTime < 1500) return; // Check at most once every 1.5s
+  lastCheckTime = now;
+
+  try {
+    const metaSnap = await getDoc(doc(firestoreDb, 'system', 'database_meta'));
+    if (!metaSnap.exists()) return;
+    const meta = metaSnap.data();
+    const cloudVersion = meta?.version || 0;
+    if (cloudVersion > currentDbVersion) {
+      console.log(
+        `[Firebase Cloud] Terdeteksi update dari perangkat lain (Cloud v${cloudVersion} > Lokal v${currentDbVersion}). Memperbarui memori server...`
+      );
+      const cloudBuffer = await loadFromFirestore();
+      if (cloudBuffer && sqlJsEngine) {
+        dbInstance = new sqlJsEngine.Database(cloudBuffer);
+        try {
+          fs.writeFileSync(DB_FILE, cloudBuffer);
+        } catch (e) {}
+        currentDbVersion = cloudVersion;
+        console.log('[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud terbaru.');
+      }
+    }
+  } catch (err) {
+    // Non-blocking
+  }
 }
 
 export async function syncToFirestore(): Promise<void> {
@@ -156,12 +248,13 @@ export async function syncToFirestore(): Promise<void> {
     const base64 = Buffer.from(data).toString('base64');
     const CHUNK_SIZE = 750 * 1024; // 750KB safe chunk size (below 1MB Firestore doc limit)
     const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
+    const newVersion = Date.now();
 
     await setDoc(doc(firestoreDb, 'system', 'database_meta'), {
       total_chunks: totalChunks,
       total_bytes: data.byteLength,
       updated_at: new Date().toISOString(),
-      version: Date.now(),
+      version: newVersion,
     });
 
     for (let i = 0; i < totalChunks; i++) {
@@ -172,9 +265,13 @@ export async function syncToFirestore(): Promise<void> {
         updated_at: new Date().toISOString(),
       });
     }
+    currentDbVersion = newVersion;
     console.log(
-      `[Firebase Cloud] Basis data berhasil dicadangkan ke Cloud Firestore (${(data.byteLength / 1024).toFixed(1)} KB)`
+      `[Firebase Cloud] Basis data berhasil dicadangkan ke Cloud Firestore (v${newVersion}, ${(data.byteLength / 1024).toFixed(1)} KB)`
     );
+
+    // Asynchronously update individual collections in background
+    syncCollectionsToFirestore().catch(() => {});
   } catch (err) {
     console.error('[Firebase Cloud] Gagal menyimpan snapshot ke Firestore:', err);
   } finally {
@@ -196,6 +293,7 @@ export async function loadFromFirestore(): Promise<Buffer | null> {
     }
     const meta = metaSnap.data();
     const totalChunks = meta?.total_chunks || 1;
+    currentDbVersion = meta?.version || Date.now();
     let fullBase64 = '';
     for (let i = 0; i < totalChunks; i++) {
       const chunkSnap = await getDoc(doc(firestoreDb, 'system', `database_chunk_${i}`));
@@ -244,6 +342,7 @@ export async function getDb(): Promise<Database> {
     },
     ...(wasmBinary ? { wasmBinary } : {}),
   });
+  sqlJsEngine = SQL;
 
   // If on Vercel and seed file exists, copy seed file to writable /tmp
   if (isVercel && fs.existsSync(SEED_FILE) && !fs.existsSync(DB_FILE)) {

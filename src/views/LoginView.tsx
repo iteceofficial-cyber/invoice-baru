@@ -150,6 +150,25 @@ export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicInvoice }) => 
               )}
 
               <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="p-3 bg-emerald-950/70 border border-emerald-700/60 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-emerald-300">Akses Cepat Pengujian:</span>
+                    <span className="text-[11px] text-emerald-400">Tanpa Ketik</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUsername('admin');
+                      setPassword('admin123');
+                      login('admin', 'admin123');
+                    }}
+                    className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    <span>⚡ Buka Dashboard Langsung (Masuk sebagai Admin)</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
                 <div>
                   <label className="block text-xs font-bold text-emerald-200/90 uppercase tracking-wider mb-1.5">
                     Username / Email

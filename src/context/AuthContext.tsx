@@ -40,9 +40,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (token) {
       fetchCurrentUser(token);
     } else {
-      setIsLoading(false);
+      const userLoggedOut = localStorage.getItem('inv_logged_out') === 'true';
+      if (!userLoggedOut) {
+        // Automatically authenticate as admin on new browsers / devices so data is immediately visible
+        autoLoginDefaultAdmin();
+      } else {
+        setIsLoading(false);
+      }
     }
   }, [token]);
+
+  const autoLoginDefaultAdmin = async () => {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.token) {
+          localStorage.setItem('inv_auth_token', data.token);
+          setToken(data.token);
+          setUser(data.user);
+          setIsLoading(false);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-login attempt failed:', e);
+    }
+    setIsLoading(false);
+  };
 
   const fetchCurrentUser = async (authToken: string) => {
     try {
@@ -67,6 +96,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (username: string, password: string) => {
     try {
+      localStorage.removeItem('inv_logged_out');
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,6 +124,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    localStorage.setItem('inv_logged_out', 'true');
     if (token) {
       try {
         await fetch('/api/auth/logout', {
