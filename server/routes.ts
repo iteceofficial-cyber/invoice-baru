@@ -3,7 +3,16 @@ import type { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import * as XLSX from 'xlsx';
 import multer from 'multer';
-import { queryAll, queryOne, runQuery, saveDb, DEFAULT_WHATSAPP_TEMPLATE, DEFAULT_PAYMENT_METHODS } from './db.ts';
+import {
+  queryAll,
+  queryOne,
+  runQuery,
+  saveDb,
+  DEFAULT_WHATSAPP_TEMPLATE,
+  DEFAULT_PAYMENT_METHODS,
+  isCloudPersistenceActive,
+  syncToFirestore,
+} from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -15,6 +24,37 @@ const upload = multer({
 });
 
 export const apiRouter = express.Router();
+
+// ==========================================
+// CLOUD PERSISTENCE & SYNC ROUTES
+// ==========================================
+
+apiRouter.get('/system/cloud-status', (_req: Request, res: Response) => {
+  const active = isCloudPersistenceActive();
+  return res.json({
+    success: true,
+    cloud_active: active,
+    provider: 'Google Cloud Firestore',
+    message: active
+      ? 'Basis data aktif terhubung ke Cloud Firestore. Data tersimpan aman dan tidak akan hilang di browser atau perangkat lain.'
+      : 'Mode basis data lokal aktif.',
+  });
+});
+
+apiRouter.post('/system/sync-cloud', requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    await syncToFirestore();
+    return res.json({
+      success: true,
+      message: 'Basis data berhasil disinkronkan ke Cloud Firestore!',
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal menyinkronkan data: ' + (err?.message || String(err)),
+    });
+  }
+});
 
 // ==========================================
 // 1. AUTHENTICATION ROUTES

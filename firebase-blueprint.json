@@ -1,0 +1,228 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account for admin or staff member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique user ID" },
+        "username": { "type": "string", "description": "Login username" },
+        "email": { "type": "string", "description": "User email address" },
+        "password_hash": { "type": "string", "description": "Bcrypt hashed password" },
+        "role_id": { "type": "number", "description": "Role identifier (1: super_admin, 2: admin)" },
+        "role_name": { "type": "string", "description": "Role name (super_admin or admin)" },
+        "full_name": { "type": "string", "description": "User's display full name" },
+        "is_active": { "type": "number", "description": "1 for active, 0 for disabled" },
+        "created_at": { "type": "string", "description": "ISO timestamp of creation" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of last update" }
+      },
+      "required": ["username", "email", "role_name", "full_name"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Category for organizing inventory products",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Category document ID" },
+        "name": { "type": "string", "description": "Category name" },
+        "description": { "type": "string", "description": "Optional category description" },
+        "created_at": { "type": "string", "description": "ISO timestamp of creation" }
+      },
+      "required": ["name"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory product item for invoice generation and stock tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Product document ID" },
+        "code": { "type": "string", "description": "Unique product SKU or code" },
+        "name": { "type": "string", "description": "Product title/name" },
+        "category_id": { "type": "string", "description": "Category ID reference" },
+        "category_name": { "type": "string", "description": "Category name for display" },
+        "unit": { "type": "string", "description": "Unit of measurement (Pcs, Box, etc)" },
+        "price": { "type": "number", "description": "Unit selling price" },
+        "stock": { "type": "number", "description": "Available stock quantity" },
+        "status": { "type": "string", "description": "Status: active or inactive" },
+        "description": { "type": "string", "description": "Product notes or specs" },
+        "created_at": { "type": "string", "description": "ISO timestamp of creation" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of update" }
+      },
+      "required": ["code", "name", "price", "unit"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer/client data for billing invoices",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Customer document ID" },
+        "name": { "type": "string", "description": "Customer or organization name" },
+        "address": { "type": "string", "description": "Billing address" },
+        "phone": { "type": "string", "description": "Contact phone number" },
+        "email": { "type": "string", "description": "Contact email" },
+        "notes": { "type": "string", "description": "Internal notes" },
+        "created_at": { "type": "string", "description": "ISO timestamp of creation" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of update" }
+      },
+      "required": ["name"]
+    },
+    "InvoiceItem": {
+      "title": "InvoiceItem",
+      "description": "Line item detail within an invoice",
+      "type": "object",
+      "properties": {
+        "product_id": { "type": "string", "description": "Product reference ID" },
+        "product_code": { "type": "string", "description": "SKU code" },
+        "product_name": { "type": "string", "description": "Product title" },
+        "qty": { "type": "number", "description": "Quantity purchased" },
+        "unit": { "type": "string", "description": "Unit (Pcs, Unit, etc)" },
+        "price": { "type": "number", "description": "Price per unit" },
+        "subtotal": { "type": "number", "description": "Line subtotal price" }
+      },
+      "required": ["product_name", "qty", "price", "subtotal"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Customer official invoice and billing details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Invoice document ID" },
+        "invoice_number": { "type": "string", "description": "Official formatted invoice number" },
+        "customer_id": { "type": "string", "description": "Customer reference ID" },
+        "customer_name": { "type": "string", "description": "Customer name" },
+        "customer_address": { "type": "string", "description": "Customer address" },
+        "customer_phone": { "type": "string", "description": "Customer phone" },
+        "activity_date": { "type": "string", "description": "Activity or issuance date" },
+        "due_date": { "type": "string", "description": "Due date" },
+        "bank_account_no": { "type": "string", "description": "Bank account number for payment" },
+        "bank_name": { "type": "string", "description": "Bank name" },
+        "bank_account_name": { "type": "string", "description": "Bank account holder name" },
+        "notes": { "type": "string", "description": "Terms or invoice notes" },
+        "subtotal": { "type": "number", "description": "Subtotal before discount & tax" },
+        "discount_type": { "type": "string", "description": "Discount type: fixed or percent" },
+        "discount_rate": { "type": "number", "description": "Discount percentage or amount" },
+        "discount_amount": { "type": "number", "description": "Calculated discount amount" },
+        "tax_percent": { "type": "number", "description": "Tax percentage (e.g. 11)" },
+        "tax_amount": { "type": "number", "description": "Calculated tax amount" },
+        "total_amount": { "type": "number", "description": "Grand total bill amount" },
+        "status": { "type": "string", "description": "Status: paid, pending, cancelled" },
+        "items": { "type": "string", "description": "Serialized JSON array of line items" },
+        "created_by_user_id": { "type": "string", "description": "Creator user identifier" },
+        "created_at": { "type": "string", "description": "ISO timestamp of creation" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of update" }
+      },
+      "required": ["invoice_number", "customer_name", "total_amount", "status"]
+    },
+    "CompanySettings": {
+      "title": "CompanySettings",
+      "description": "Company profile branding and official contact information",
+      "type": "object",
+      "properties": {
+        "company_name": { "type": "string", "description": "Official business name" },
+        "logo_url": { "type": "string", "description": "Logo URL or header banner path" },
+        "address": { "type": "string", "description": "Official office address" },
+        "phone": { "type": "string", "description": "Official contact phone" },
+        "email": { "type": "string", "description": "Official contact email" },
+        "website": { "type": "string", "description": "Website URL" },
+        "bank_account_no": { "type": "string", "description": "Default payment account number" },
+        "bank_name": { "type": "string", "description": "Default bank name" },
+        "bank_account_name": { "type": "string", "description": "Default bank account holder" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of update" }
+      },
+      "required": ["company_name"]
+    },
+    "InvoiceSettings": {
+      "title": "InvoiceSettings",
+      "description": "Invoice format, signature, WhatsApp template, and payment methods configuration",
+      "type": "object",
+      "properties": {
+        "prefix": { "type": "string", "description": "Invoice prefix" },
+        "number_format": { "type": "string", "description": "Number pattern" },
+        "start_number": { "type": "number", "description": "Counter starting number" },
+        "date_format": { "type": "string", "description": "Date format string" },
+        "currency": { "type": "string", "description": "Currency symbol" },
+        "default_tax_percent": { "type": "number", "description": "Default tax percent" },
+        "default_discount": { "type": "number", "description": "Default discount value" },
+        "default_notes": { "type": "string", "description": "Default terms and notes" },
+        "signature_text": { "type": "string", "description": "Closing signature salutation" },
+        "signer_name": { "type": "string", "description": "Authorized signatory name" },
+        "signer_title": { "type": "string", "description": "Authorized signatory title" },
+        "footer_text": { "type": "string", "description": "Footer copyright or note" },
+        "primary_color": { "type": "string", "description": "Primary brand hex color" },
+        "secondary_color": { "type": "string", "description": "Secondary brand hex color" },
+        "app_name": { "type": "string", "description": "Application display title" },
+        "header_image_url": { "type": "string", "description": "Invoice header image banner path" },
+        "footer_image_url": { "type": "string", "description": "Invoice footer image banner path" },
+        "whatsapp_template": { "type": "string", "description": "Customizable WhatsApp text template" },
+        "payment_methods": { "type": "string", "description": "Serialized JSON array of active bank/QRIS/cash methods" },
+        "public_app_url": { "type": "string", "description": "Public URL for invoice sharing" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of update" }
+      },
+      "required": ["prefix", "app_name"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit trail log of actions performed in the application",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Log ID" },
+        "user_id": { "type": "string", "description": "User ID who performed action" },
+        "username": { "type": "string", "description": "Username of actor" },
+        "action": { "type": "string", "description": "Action performed" },
+        "details": { "type": "string", "description": "Action description details" },
+        "ip_address": { "type": "string", "description": "Client IP address" },
+        "created_at": { "type": "string", "description": "ISO timestamp" }
+      },
+      "required": ["username", "action"]
+    },
+    "SystemSnapshot": {
+      "title": "SystemSnapshot",
+      "description": "System database snapshot ensuring all devices and browsers sync persistent state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Snapshot ID" },
+        "data": { "type": "string", "description": "Encoded database payload" },
+        "updated_at": { "type": "string", "description": "ISO timestamp of update" }
+      },
+      "required": ["data"]
+    }
+  },
+  "firestore": {
+    "/system/{docId}": {
+      "schema": "SystemSnapshot",
+      "description": "Persistent database snapshot state synced across sessions and devices"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection of users and credentials"
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Collection of product categories"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Collection of inventory items"
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Collection of clients and customers"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": "Invoice",
+      "description": "Collection of billing invoices"
+    },
+    "/settings/company": {
+      "schema": "CompanySettings",
+      "description": "Singleton document storing company profile"
+    },
+    "/settings/invoice": {
+      "schema": "InvoiceSettings",
+      "description": "Singleton document storing invoice template & WhatsApp configuration"
+    },
+    "/activity_logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "Audit trail logs for tracking system activities"
+    }
+  }
+}

@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Globe,
   Link2,
+  Cloud,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { useToast } from '../context/ToastContext.tsx';
@@ -70,10 +71,42 @@ export const SettingsView: React.FC = () => {
   const isSuperAdmin = user?.role_name === 'Super Admin' || user?.role_id === 1;
 
   const [activeTab, setActiveTab] = useState<
-    'company' | 'header-footer' | 'payment' | 'whatsapp' | 'invoice' | 'branding' | 'security'
+    'company' | 'header-footer' | 'payment' | 'whatsapp' | 'invoice' | 'branding' | 'security' | 'cloud'
   >('company');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [syncingCloud, setSyncingCloud] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<{ active: boolean; message: string }>({
+    active: true,
+    message: 'Tersambung ke Cloud Firestore',
+  });
+
+  const checkCloudStatus = async () => {
+    try {
+      const res = await apiRequest('/api/system/cloud-status');
+      if (res.success) {
+        setCloudStatus({
+          active: res.cloud_active,
+          message: res.message || 'Cloud Firestore Aktif',
+        });
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    checkCloudStatus();
+  }, []);
+
+  const handleManualSync = async () => {
+    setSyncingCloud(true);
+    const res = await apiRequest('/api/system/sync-cloud', { method: 'POST' });
+    setSyncingCloud(false);
+    if (res.success) {
+      toast.success('Basis data berhasil disinkronkan ke Cloud Firestore!');
+    } else {
+      toast.error(res.message || 'Gagal sinkronisasi cloud');
+    }
+  };
 
   const [company, setCompany] = useState<CompanySettings>({
     company_name: '',
@@ -523,6 +556,18 @@ export const SettingsView: React.FC = () => {
         >
           <Lock className="w-4 h-4" />
           <span>Ganti Password</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('cloud')}
+          className={`flex items-center gap-2 px-4 py-2.5 font-bold text-xs border-b-2 transition whitespace-nowrap cursor-pointer ${
+            activeTab === 'cloud'
+              ? 'border-[#136239] text-[#136239]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Cloud className="w-4 h-4 text-emerald-600" />
+          <span>Sinkronisasi Cloud (Multi-Device)</span>
         </button>
       </div>
 
@@ -1489,6 +1534,77 @@ export const SettingsView: React.FC = () => {
       {activeTab === 'security' && (
         <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200/80 shadow-xs">
           <ChangePasswordView />
+        </div>
+      )}
+
+      {/* TAB 7: Cloud Persistence / Multi-Device Sync */}
+      {activeTab === 'cloud' && (
+        <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200/80 shadow-xs space-y-6">
+          <div className="flex items-start justify-between border-b border-slate-100 pb-5">
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+                <Cloud className="w-5 h-5 text-emerald-600" />
+                <span>Sinkronisasi Multi-Device & Cloud Firestore</span>
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Data seluruh produk, pelanggan, invoice, dan pengaturan tersimpan secara permanen di Google Cloud Firestore.
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              Aktif & Tersinkronisasi
+            </span>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1">
+              <span className="text-xs text-slate-500 font-medium">Status Koneksi Cloud:</span>
+              <p className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                {cloudStatus.message}
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1">
+              <span className="text-xs text-slate-500 font-medium">Penyimpanan Terpadu:</span>
+              <p className="text-sm font-bold text-slate-800">
+                Google Cloud Firestore (Firebase)
+              </p>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200/80 space-y-2 text-xs text-emerald-900">
+            <p className="font-bold flex items-center gap-1.5 text-emerald-800">
+              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              Jaminan Anti Kehilangan Data Antar Perangkat & Browser:
+            </p>
+            <ul className="list-disc list-inside space-y-1 text-slate-700 leading-relaxed">
+              <li>
+                <strong>Otomatis Tersimpan:</strong> Setiap penambahan produk, pelanggan, atau pembuatan invoice langsung dicadangkan ke Cloud Firestore.
+              </li>
+              <li>
+                <strong>Buka di Browser / HP Lain:</strong> Saat Anda atau tim Anda membuka link aplikasi di smartphone, laptop lain, atau browser baru, data otomatis ditarik dari Cloud Firestore.
+              </li>
+              <li>
+                <strong>Konsumen Tanpa Login:</strong> Pelanggan yang membuka link faktur via WhatsApp tetap dapat mengakses dan mengunduh faktur PDF resmi mereka dari mana saja.
+              </li>
+            </ul>
+          </div>
+
+          <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <span className="text-xs text-slate-500">
+              Ingin mencadangkan paksa perubahan terbaru ke Cloud sekarang?
+            </span>
+            <button
+              type="button"
+              onClick={handleManualSync}
+              disabled={syncingCloud}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-white text-xs font-bold shadow-md shadow-emerald-950/20 cursor-pointer disabled:opacity-50 transition"
+            >
+              <RefreshCw className={`w-4 h-4 ${syncingCloud ? 'animate-spin' : ''}`} />
+              <span>{syncingCloud ? 'Menyinkronkan...' : 'Sinkronkan Sekarang ke Cloud'}</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

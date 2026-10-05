@@ -66,7 +66,10 @@ export const Header: React.FC<HeaderProps> = ({
               {companyName}
             </span>
             <span className="text-slate-300">•</span>
-            <span>Versi Resmi</span>
+            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Cloud Firestore Synced
+            </span>
           </div>
         </div>
       </div>

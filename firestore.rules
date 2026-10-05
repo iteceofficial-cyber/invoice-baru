@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Connection validation test document
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // System snapshot for multi-device cloud persistence
+    match /system/{docId} {
+      allow read, write: if true;
+    }
+
+    // Settings (company and invoice configuration)
+    // Public read so that public invoice views can render company name & logos
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Invoices
+    // Public read so consumers can view and download invoices without logging in
+    match /invoices/{invoiceId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Products
+    match /products/{productId} {
+      allow read, write: if true;
+    }
+
+    // Categories
+    match /categories/{categoryId} {
+      allow read, write: if true;
+    }
+
+    // Customers
+    match /customers/{customerId} {
+      allow read, write: if true;
+    }
+
+    // Users
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Activity Logs
+    match /activity_logs/{logId} {
+      allow read, write: if true;
+    }
+  }
+}

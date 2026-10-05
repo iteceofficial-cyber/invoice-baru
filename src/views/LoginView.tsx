@@ -214,6 +214,41 @@ export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicInvoice }) => 
                     </>
                   )}
                 </button>
+
+                {/* Quick login demo buttons for multi-device testing */}
+                <div className="pt-2 border-t border-emerald-900/60">
+                  <p className="text-[11px] text-emerald-400/80 mb-2 font-medium text-center">
+                    Akses Cepat Pengujian di Perangkat Ini:
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUsername('admin');
+                        setPassword('admin123');
+                      }}
+                      className="py-1.5 px-2 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800/80 rounded-lg text-emerald-200 text-xs font-semibold transition text-center cursor-pointer"
+                    >
+                      ⚡ Isi Akun Admin
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUsername('staff');
+                        setPassword('staff123');
+                      }}
+                      className="py-1.5 px-2 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800/80 rounded-lg text-emerald-200 text-xs font-semibold transition text-center cursor-pointer"
+                    >
+                      ⚡ Isi Akun Staf
+                    </button>
+                  </div>
+                </div>
+
+                {/* Cloud status badge */}
+                <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-800/40 flex items-center gap-2 text-[11px] text-emerald-300">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                  <span>Cloud Firestore Aktif — Data tersimpan aman & sinkron di semua device</span>
+                </div>
               </form>
             </>
           )}

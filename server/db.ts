@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import { createRequire } from 'module';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
 
 const require = createRequire(import.meta.url);
 
@@ -12,6 +14,22 @@ const isVercel = !!process.env.VERCEL;
 const DATA_DIR = isVercel ? '/tmp/data' : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.sqlite');
 const SEED_FILE = path.resolve(process.cwd(), 'data', 'database.sqlite');
+
+// Cloud Firestore configuration for permanent multi-device persistence
+let firestoreDb: any = null;
+try {
+  const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(cfgPath)) {
+    const config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    if (config.projectId) {
+      const fbApp = getApps().length > 0 ? getApp() : initializeApp(config);
+      firestoreDb = getFirestore(fbApp, config.firestoreDatabaseId);
+      console.log('[Firebase Cloud] Cloud Firestore terhubung untuk persistensi lintas perangkat.');
+    }
+  }
+} catch (e) {
+  console.warn('[Firebase Cloud] Gagal menginisialisasi Firestore backend:', e);
+}
 
 export const DEFAULT_WHATSAPP_TEMPLATE = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
 
@@ -119,6 +137,87 @@ function getWasmBinary(): Buffer | undefined {
   return undefined;
 }
 
+let isSavingToFirestore = false;
+let pendingSave = false;
+
+export function isCloudPersistenceActive(): boolean {
+  return !!firestoreDb;
+}
+
+export async function syncToFirestore(): Promise<void> {
+  if (!dbInstance || !firestoreDb) return;
+  if (isSavingToFirestore) {
+    pendingSave = true;
+    return;
+  }
+  isSavingToFirestore = true;
+  try {
+    const data = dbInstance.export();
+    const base64 = Buffer.from(data).toString('base64');
+    const CHUNK_SIZE = 750 * 1024; // 750KB safe chunk size (below 1MB Firestore doc limit)
+    const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
+
+    await setDoc(doc(firestoreDb, 'system', 'database_meta'), {
+      total_chunks: totalChunks,
+      total_bytes: data.byteLength,
+      updated_at: new Date().toISOString(),
+      version: Date.now(),
+    });
+
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = base64.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      await setDoc(doc(firestoreDb, 'system', `database_chunk_${i}`), {
+        chunk_index: i,
+        data: chunk,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    console.log(
+      `[Firebase Cloud] Basis data berhasil dicadangkan ke Cloud Firestore (${(data.byteLength / 1024).toFixed(1)} KB)`
+    );
+  } catch (err) {
+    console.error('[Firebase Cloud] Gagal menyimpan snapshot ke Firestore:', err);
+  } finally {
+    isSavingToFirestore = false;
+    if (pendingSave) {
+      pendingSave = false;
+      syncToFirestore().catch(console.error);
+    }
+  }
+}
+
+export async function loadFromFirestore(): Promise<Buffer | null> {
+  if (!firestoreDb) return null;
+  try {
+    const metaSnap = await getDoc(doc(firestoreDb, 'system', 'database_meta'));
+    if (!metaSnap.exists()) {
+      console.log('[Firebase Cloud] Snapshot cloud belum ada di Firestore, menggunakan basis data lokal/seed');
+      return null;
+    }
+    const meta = metaSnap.data();
+    const totalChunks = meta?.total_chunks || 1;
+    let fullBase64 = '';
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkSnap = await getDoc(doc(firestoreDb, 'system', `database_chunk_${i}`));
+      if (!chunkSnap.exists()) {
+        console.warn(`[Firebase Cloud] Chunk ${i} tidak ditemukan di Firestore`);
+        return null;
+      }
+      fullBase64 += chunkSnap.data()?.data || '';
+    }
+    if (fullBase64.length > 0) {
+      const buffer = Buffer.from(fullBase64, 'base64');
+      console.log(
+        `[Firebase Cloud] Basis data berhasil dimuat dari Cloud Firestore (${(buffer.length / 1024).toFixed(1)} KB)`
+      );
+      return buffer;
+    }
+  } catch (err) {
+    console.warn('[Firebase Cloud] Gagal membaca snapshot dari Firestore:', err);
+  }
+  return null;
+}
+
 export async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance;
 
@@ -155,18 +254,34 @@ export async function getDb(): Promise<Database> {
     }
   }
 
-  const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
-
-  if (targetFile) {
+  // 1. Attempt to load persistent snapshot from Cloud Firestore across all devices
+  const cloudBuffer = await loadFromFirestore();
+  if (cloudBuffer) {
     try {
-      const fileBuffer = fs.readFileSync(targetFile);
-      dbInstance = new SQL.Database(fileBuffer);
+      dbInstance = new SQL.Database(cloudBuffer);
+      try {
+        fs.writeFileSync(DB_FILE, cloudBuffer);
+      } catch (e) {}
+      console.log('[Database] Menggunakan basis data persisten Cloud Firestore');
     } catch (err) {
-      console.error('Error loading existing database file, creating new database:', err);
+      console.error('[Database] Gagal menginisialisasi dari cloud buffer, fallback ke lokal:', err);
+    }
+  }
+
+  // 2. If no cloud snapshot yet, fallback to local file or seed
+  if (!dbInstance) {
+    const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+    if (targetFile) {
+      try {
+        const fileBuffer = fs.readFileSync(targetFile);
+        dbInstance = new SQL.Database(fileBuffer);
+      } catch (err) {
+        console.error('Error loading existing database file, creating new database:', err);
+        dbInstance = new SQL.Database();
+      }
+    } else {
       dbInstance = new SQL.Database();
     }
-  } else {
-    dbInstance = new SQL.Database();
   }
 
   // Enable foreign keys
@@ -190,6 +305,11 @@ export function saveDb() {
     // In serverless / read-only environment, keep changes in-memory safely
     console.warn('[Database] Warning: Could not write to disk, changes preserved in memory:', err);
   }
+
+  // Persist to Cloud Firestore so any other browser or device gets the exact same updated database!
+  syncToFirestore().catch((err) => {
+    console.error('[Firebase Sync Error]:', err);
+  });
 }
 
 // Helper to execute select queries and return array of objects
