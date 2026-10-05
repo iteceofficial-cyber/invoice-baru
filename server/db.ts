@@ -5,7 +5,9 @@ import path from 'path';
 import bcrypt from 'bcryptjs';
 import { createRequire } from 'module';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, setLogLevel, terminate } from 'firebase/firestore';
+
+setLogLevel('silent'); // Suppress verbose internal gRPC retry logs when quota limit is reached
 
 const require = createRequire(import.meta.url);
 
@@ -14,21 +16,75 @@ const isVercel = !!process.env.VERCEL;
 const DATA_DIR = isVercel ? '/tmp/data' : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.sqlite');
 const SEED_FILE = path.resolve(process.cwd(), 'data', 'database.sqlite');
+const QUOTA_FILE = path.join(DATA_DIR, 'firestore_quota_exhausted.json');
+
+export function checkPersistedQuotaExhaustion(): boolean {
+  try {
+    if (fs.existsSync(QUOTA_FILE)) {
+      const data = JSON.parse(fs.readFileSync(QUOTA_FILE, 'utf8'));
+      const exhaustedAt = new Date(data.timestamp).getTime();
+      const now = Date.now();
+      // If quota was exhausted less than 24 hours ago, pause Firestore writes today
+      if (now - exhaustedAt < 24 * 60 * 60 * 1000) {
+        return true;
+      } else {
+        try {
+          fs.unlinkSync(QUOTA_FILE);
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
+export function persistQuotaExhaustion() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(
+      QUOTA_FILE,
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        reason: 'Free daily write units per project exceeded (Spark plan)',
+      })
+    );
+  } catch (e) {}
+}
+
+let isFirestoreQuotaExhausted = checkPersistedQuotaExhaustion();
 
 // Cloud Firestore configuration for permanent multi-device persistence
 let firestoreDb: any = null;
-try {
-  const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-  if (fs.existsSync(cfgPath)) {
-    const config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-    if (config.projectId) {
-      const fbApp = getApps().length > 0 ? getApp() : initializeApp(config);
-      firestoreDb = getFirestore(fbApp, config.firestoreDatabaseId);
-      console.log('[Firebase Cloud] Cloud Firestore terhubung untuk persistensi lintas perangkat.');
+if (!isFirestoreQuotaExhausted) {
+  try {
+    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (config.projectId) {
+        const fbApp = getApps().length > 0 ? getApp() : initializeApp(config);
+        firestoreDb = getFirestore(fbApp, config.firestoreDatabaseId);
+        console.log('[Firebase Cloud] Cloud Firestore terhubung untuk persistensi lintas perangkat.');
+      }
     }
+  } catch (e) {
+    console.warn('[Firebase Cloud] Gagal menginisialisasi Firestore backend:', e);
   }
-} catch (e) {
-  console.warn('[Firebase Cloud] Gagal menginisialisasi Firestore backend:', e);
+} else {
+  console.log('[Firebase Cloud] Kuota gratis harian Firestore tercapai hari ini. Menggunakan basis data lokal persisten.');
+}
+
+export function markQuotaExhausted() {
+  if (isFirestoreQuotaExhausted && !firestoreDb) return;
+  isFirestoreQuotaExhausted = true;
+  persistQuotaExhaustion();
+  console.warn(
+    '[Firebase Cloud] Kuota gratis harian Firestore tercapai. Menutup koneksi gRPC dan beralih penuh ke basis data lokal.'
+  );
+  if (firestoreDb) {
+    try {
+      terminate(firestoreDb).catch(() => {});
+    } catch (e) {}
+    firestoreDb = null;
+  }
 }
 
 export const DEFAULT_WHATSAPP_TEMPLATE = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
@@ -46,9 +102,6 @@ Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ri
 
 🏦 *Metode Pembayaran Resmi:*
 {metode_pembayaran}
-
-🌐 *Lihat Faktur Web (Buka di Browser Tanpa Login):*
-{link_download}
 
 📥 *Unduh Langsung File PDF Resmi (Klik untuk Download):*
 {link_pdf}
@@ -143,73 +196,16 @@ let lastCheckTime = 0;
 let currentDbVersion = 0;
 let sqlJsEngine: any = null;
 
+let syncDebounceTimer: any = null;
+
 export function isCloudPersistenceActive(): boolean {
-  return !!firestoreDb;
-}
-
-export async function syncCollectionsToFirestore(): Promise<void> {
-  if (!dbInstance || !firestoreDb) return;
-  try {
-    // 1. Sync Products
-    const prods = queryAll('SELECT * FROM products');
-    for (const p of prods) {
-      await setDoc(doc(firestoreDb, 'products', String(p.id)), {
-        ...p,
-        id: String(p.id),
-        price: Number(p.price),
-        stock: Number(p.stock),
-      });
-    }
-
-    // 2. Sync Customers
-    const custs = queryAll('SELECT * FROM customers');
-    for (const c of custs) {
-      await setDoc(doc(firestoreDb, 'customers', String(c.id)), {
-        ...c,
-        id: String(c.id),
-      });
-    }
-
-    // 3. Sync Categories
-    const cats = queryAll('SELECT * FROM categories');
-    for (const cat of cats) {
-      await setDoc(doc(firestoreDb, 'categories', String(cat.id)), {
-        ...cat,
-        id: String(cat.id),
-      });
-    }
-
-    // 4. Sync Invoices (with items)
-    const invs = queryAll('SELECT * FROM invoices');
-    for (const inv of invs) {
-      const items = queryAll('SELECT * FROM invoice_items WHERE invoice_id = ?', [inv.id]);
-      await setDoc(doc(firestoreDb, 'invoices', String(inv.id)), {
-        ...inv,
-        id: String(inv.id),
-        items: JSON.stringify(items),
-        subtotal: Number(inv.subtotal),
-        total_amount: Number(inv.total_amount),
-      });
-    }
-
-    // 5. Sync Settings
-    const comp = queryOne('SELECT * FROM company_settings WHERE id = 1');
-    if (comp) {
-      await setDoc(doc(firestoreDb, 'settings', 'company'), comp);
-    }
-    const invSet = queryOne('SELECT * FROM invoice_settings WHERE id = 1');
-    if (invSet) {
-      await setDoc(doc(firestoreDb, 'settings', 'invoice'), invSet);
-    }
-  } catch (err) {
-    console.warn('[Firebase Cloud] Sinkronisasi koleksi parsial:', err);
-  }
+  return !!firestoreDb && !isFirestoreQuotaExhausted;
 }
 
 export async function checkAndSyncFromFirestore(): Promise<void> {
-  if (!firestoreDb) return;
+  if (!firestoreDb || isFirestoreQuotaExhausted) return;
   const now = Date.now();
-  if (now - lastCheckTime < 1500) return; // Check at most once every 1.5s
+  if (now - lastCheckTime < 10000) return; // Check at most once every 10s
   lastCheckTime = now;
 
   try {
@@ -218,45 +214,51 @@ export async function checkAndSyncFromFirestore(): Promise<void> {
     const meta = metaSnap.data();
     const cloudVersion = meta?.version || 0;
     if (cloudVersion > currentDbVersion) {
-      console.log(
-        `[Firebase Cloud] Terdeteksi update dari perangkat lain (Cloud v${cloudVersion} > Lokal v${currentDbVersion}). Memperbarui memori server...`
-      );
       const cloudBuffer = await loadFromFirestore();
       if (cloudBuffer && sqlJsEngine) {
-        dbInstance = new sqlJsEngine.Database(cloudBuffer);
         try {
-          fs.writeFileSync(DB_FILE, cloudBuffer);
+          const testDb = new sqlJsEngine.Database(cloudBuffer);
+          const check = testDb.exec('PRAGMA integrity_check;');
+          if (check[0]?.values[0]?.[0] === 'ok') {
+            dbInstance = testDb;
+            try {
+              fs.writeFileSync(DB_FILE, cloudBuffer);
+            } catch (e) {}
+            currentDbVersion = cloudVersion;
+            console.log('[Firebase Cloud] Basis data server diperbarui dari snapshot Cloud.');
+          }
         } catch (e) {}
-        currentDbVersion = cloudVersion;
-        console.log('[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud terbaru.');
       }
     }
-  } catch (err) {
-    // Non-blocking
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota limit') || err?.code === 'resource-exhausted') {
+      markQuotaExhausted();
+    }
   }
 }
 
 export async function syncToFirestore(): Promise<void> {
-  if (!dbInstance || !firestoreDb) return;
+  if (!dbInstance || !firestoreDb || isFirestoreQuotaExhausted) return;
   if (isSavingToFirestore) {
     pendingSave = true;
     return;
   }
   isSavingToFirestore = true;
   try {
+    const check = dbInstance.exec('PRAGMA integrity_check;');
+    if (check[0]?.values[0]?.[0] !== 'ok') {
+      console.warn('[Firebase Cloud] Memory database corrupted, skipping cloud upload');
+      return;
+    }
+
     const data = dbInstance.export();
     const base64 = Buffer.from(data).toString('base64');
     const CHUNK_SIZE = 750 * 1024; // 750KB safe chunk size (below 1MB Firestore doc limit)
     const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
     const newVersion = Date.now();
 
-    await setDoc(doc(firestoreDb, 'system', 'database_meta'), {
-      total_chunks: totalChunks,
-      total_bytes: data.byteLength,
-      updated_at: new Date().toISOString(),
-      version: newVersion,
-    });
-
+    // 1. Write all chunks FIRST
     for (let i = 0; i < totalChunks; i++) {
       const chunk = base64.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
       await setDoc(doc(firestoreDb, 'system', `database_chunk_${i}`), {
@@ -265,59 +267,91 @@ export async function syncToFirestore(): Promise<void> {
         updated_at: new Date().toISOString(),
       });
     }
+
+    // 2. Only write metadata AFTER all chunks succeed
+    await setDoc(doc(firestoreDb, 'system', 'database_meta'), {
+      total_chunks: totalChunks,
+      total_bytes: data.byteLength,
+      updated_at: new Date().toISOString(),
+      version: newVersion,
+    });
+
     currentDbVersion = newVersion;
     console.log(
       `[Firebase Cloud] Basis data berhasil dicadangkan ke Cloud Firestore (v${newVersion}, ${(data.byteLength / 1024).toFixed(1)} KB)`
     );
-
-    // Asynchronously update individual collections in background
-    syncCollectionsToFirestore().catch(() => {});
-  } catch (err) {
-    console.error('[Firebase Cloud] Gagal menyimpan snapshot ke Firestore:', err);
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    if (
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.includes('Quota limit') ||
+      msg.includes('Quota exceeded') ||
+      err?.code === 'resource-exhausted' ||
+      err?.code === 8
+    ) {
+      markQuotaExhausted();
+    } else {
+      console.warn('[Firebase Cloud] Note: ' + msg);
+    }
   } finally {
     isSavingToFirestore = false;
-    if (pendingSave) {
+    if (pendingSave && !isFirestoreQuotaExhausted) {
       pendingSave = false;
-      syncToFirestore().catch(console.error);
+      syncToFirestore().catch(() => {});
+    } else {
+      pendingSave = false;
     }
   }
 }
 
 export async function loadFromFirestore(): Promise<Buffer | null> {
-  if (!firestoreDb) return null;
+  if (!firestoreDb || isFirestoreQuotaExhausted) return null;
   try {
     const metaSnap = await getDoc(doc(firestoreDb, 'system', 'database_meta'));
-    if (!metaSnap.exists()) {
-      console.log('[Firebase Cloud] Snapshot cloud belum ada di Firestore, menggunakan basis data lokal/seed');
-      return null;
-    }
+    if (!metaSnap.exists()) return null;
     const meta = metaSnap.data();
     const totalChunks = meta?.total_chunks || 1;
-    currentDbVersion = meta?.version || Date.now();
     let fullBase64 = '';
     for (let i = 0; i < totalChunks; i++) {
       const chunkSnap = await getDoc(doc(firestoreDb, 'system', `database_chunk_${i}`));
-      if (!chunkSnap.exists()) {
-        console.warn(`[Firebase Cloud] Chunk ${i} tidak ditemukan di Firestore`);
-        return null;
-      }
+      if (!chunkSnap.exists()) return null;
       fullBase64 += chunkSnap.data()?.data || '';
     }
     if (fullBase64.length > 0) {
       const buffer = Buffer.from(fullBase64, 'base64');
-      console.log(
-        `[Firebase Cloud] Basis data berhasil dimuat dari Cloud Firestore (${(buffer.length / 1024).toFixed(1)} KB)`
-      );
+      if (sqlJsEngine) {
+        try {
+          const testDb = new sqlJsEngine.Database(buffer);
+          const check = testDb.exec('PRAGMA integrity_check;');
+          if (check[0]?.values[0]?.[0] === 'ok') {
+            currentDbVersion = meta?.version || Date.now();
+            return buffer;
+          } else {
+            console.warn('[Firebase Cloud] Snapshot cloud tidak lolos integrity check, mengabaikan snapshot.');
+            return null;
+          }
+        } catch (e) {
+          return null;
+        }
+      }
       return buffer;
     }
-  } catch (err) {
-    console.warn('[Firebase Cloud] Gagal membaca snapshot dari Firestore:', err);
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota limit') || err?.code === 'resource-exhausted') {
+      isFirestoreQuotaExhausted = true;
+    }
   }
   return null;
 }
 
 export async function getDb(): Promise<Database> {
-  if (dbInstance) return dbInstance;
+  if (dbInstance) {
+    try {
+      const check = dbInstance.exec('PRAGMA integrity_check;');
+      if (check[0]?.values[0]?.[0] === 'ok') return dbInstance;
+    } catch (e) {}
+  }
 
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -353,34 +387,45 @@ export async function getDb(): Promise<Database> {
     }
   }
 
-  // 1. Attempt to load persistent snapshot from Cloud Firestore across all devices
-  const cloudBuffer = await loadFromFirestore();
-  if (cloudBuffer) {
+  // 1. Prefer healthy local disk database
+  const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+  if (targetFile) {
     try {
-      dbInstance = new SQL.Database(cloudBuffer);
-      try {
-        fs.writeFileSync(DB_FILE, cloudBuffer);
-      } catch (e) {}
-      console.log('[Database] Menggunakan basis data persisten Cloud Firestore');
+      const fileBuffer = fs.readFileSync(targetFile);
+      const testDb = new SQL.Database(fileBuffer);
+      const check = testDb.exec('PRAGMA integrity_check;');
+      if (check[0]?.values[0]?.[0] === 'ok') {
+        dbInstance = testDb;
+        console.log('[Database] Menggunakan basis data lokal terverifikasi sehat:', targetFile);
+      }
     } catch (err) {
-      console.error('[Database] Gagal menginisialisasi dari cloud buffer, fallback ke lokal:', err);
+      console.warn('[Database] File lokal tidak lolos tes integritas:', err);
     }
   }
 
-  // 2. If no cloud snapshot yet, fallback to local file or seed
+  // 2. Only if local not ready, load verified snapshot from Cloud Firestore
   if (!dbInstance) {
-    const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
-    if (targetFile) {
+    const cloudBuffer = await loadFromFirestore();
+    if (cloudBuffer) {
       try {
-        const fileBuffer = fs.readFileSync(targetFile);
-        dbInstance = new SQL.Database(fileBuffer);
+        const testDb = new SQL.Database(cloudBuffer);
+        const check = testDb.exec('PRAGMA integrity_check;');
+        if (check[0]?.values[0]?.[0] === 'ok') {
+          dbInstance = testDb;
+          try {
+            fs.writeFileSync(DB_FILE, cloudBuffer);
+          } catch (e) {}
+          console.log('[Database] Menggunakan basis data Cloud Firestore yang terverifikasi sehat');
+        }
       } catch (err) {
-        console.error('Error loading existing database file, creating new database:', err);
-        dbInstance = new SQL.Database();
+        console.warn('[Database] Cloud buffer tidak valid:', err);
       }
-    } else {
-      dbInstance = new SQL.Database();
     }
+  }
+
+  // 3. Fallback to clean new DB
+  if (!dbInstance) {
+    dbInstance = new SQL.Database();
   }
 
   // Enable foreign keys
@@ -394,6 +439,13 @@ export async function getDb(): Promise<Database> {
 export function saveDb() {
   if (!dbInstance) return;
   try {
+    // Integrity check before saving to disk
+    const check = dbInstance.exec('PRAGMA integrity_check;');
+    if (check[0]?.values[0]?.[0] !== 'ok') {
+      console.warn('[Database CRITICAL] In-memory database corrupt, skipping save to avoid disk corruption');
+      return;
+    }
+
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
@@ -401,14 +453,14 @@ export function saveDb() {
     const buffer = Buffer.from(data);
     fs.writeFileSync(DB_FILE, buffer);
   } catch (err) {
-    // In serverless / read-only environment, keep changes in-memory safely
     console.warn('[Database] Warning: Could not write to disk, changes preserved in memory:', err);
   }
 
-  // Persist to Cloud Firestore so any other browser or device gets the exact same updated database!
-  syncToFirestore().catch((err) => {
-    console.error('[Firebase Sync Error]:', err);
-  });
+  // Debounced cloud sync (3 seconds) to avoid spamming and preserve Firestore daily quotas
+  if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+  syncDebounceTimer = setTimeout(() => {
+    syncToFirestore().catch(() => {});
+  }, 3000);
 }
 
 // Helper to execute select queries and return array of objects
@@ -430,10 +482,35 @@ export function queryOne<T = any>(sql: string, params: any[] = []): T | null {
   return rows.length > 0 ? rows[0] : null;
 }
 
-// Helper to execute insert/update/delete and return lastInsertId and changes
+// Helper to execute insert/update/delete with auto-recovery from corrupted state
 export function runQuery(sql: string, params: any[] = []): { lastInsertRowId: number; changes: number } {
   if (!dbInstance) throw new Error('Database not initialized');
-  dbInstance.run(sql, params);
+  try {
+    dbInstance.run(sql, params);
+  } catch (err: any) {
+    if (err?.message?.includes('malformed') || err?.message?.includes('corrupt')) {
+      console.error('[Database CRITICAL] Deteksi database malformed saat runQuery, memulihkan dari file disk...');
+      const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+      if (targetFile && sqlJsEngine) {
+        const fileBuffer = fs.readFileSync(targetFile);
+        const recoveredDb = new sqlJsEngine.Database(fileBuffer);
+        const check = recoveredDb.exec('PRAGMA integrity_check;');
+        if (check[0]?.values[0]?.[0] === 'ok') {
+          dbInstance = recoveredDb;
+          recoveredDb.run(sql, params);
+          console.log('[Database] Query berhasil dijalankan ulang setelah pemulihan database!');
+        } else {
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  if (!dbInstance) throw new Error('Database instance missing after execution');
   const lastIdResult = dbInstance.exec('SELECT last_insert_rowid() as id;');
   const lastInsertRowId = (lastIdResult[0]?.values[0]?.[0] as number) || 0;
   const changesResult = dbInstance.exec('SELECT changes() as cnt;');

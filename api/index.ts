@@ -8,7 +8,7 @@ const app = express();
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
-// Initialize DB and ensure Cloud Firestore sync before handling requests
+// Initialize DB before handling requests
 let dbInitPromise: Promise<any> | null = null;
 app.use(async (_req, res, next) => {
   try {
@@ -16,7 +16,6 @@ app.use(async (_req, res, next) => {
       dbInitPromise = getDb();
     }
     await dbInitPromise;
-    await checkAndSyncFromFirestore();
     next();
   } catch (e: any) {
     console.error('[Vercel Serverless] Failed to initialize database:', e);

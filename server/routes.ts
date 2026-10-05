@@ -26,14 +26,6 @@ const upload = multer({
 
 export const apiRouter = express.Router();
 
-// Synchronize database from Cloud Firestore if another device made an update
-apiRouter.use(async (_req, _res, next) => {
-  try {
-    await checkAndSyncFromFirestore();
-  } catch (e) {}
-  next();
-});
-
 // ==========================================
 // CLOUD PERSISTENCE & SYNC ROUTES
 // ==========================================
@@ -3032,6 +3024,40 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal menyimpan pengaturan invoice: ' + err.message });
+  }
+});
+
+// Update payment methods specifically
+apiRouter.put('/settings/payment-methods', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { payment_methods } = req.body;
+    if (!Array.isArray(payment_methods) || payment_methods.length === 0) {
+      return res.status(400).json({ success: false, message: 'Minimal harus ada 1 metode pembayaran terdaftar' });
+    }
+    const jsonStr = JSON.stringify(payment_methods);
+    runQuery(
+      `UPDATE invoice_settings 
+       SET payment_methods = ?, updated_at = datetime('now', 'localtime') 
+       WHERE id = 1`,
+      [jsonStr]
+    );
+    saveDb();
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Mengubah Metode Pembayaran',
+      `Memperbarui ${payment_methods.length} daftar rekening & metode pembayaran invoice`,
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: 'Daftar metode pembayaran berhasil diperbarui!',
+      data: payment_methods,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal menyimpan metode pembayaran: ' + err.message });
   }
 });
 

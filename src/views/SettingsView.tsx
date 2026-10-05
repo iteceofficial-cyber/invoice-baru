@@ -367,19 +367,32 @@ export const SettingsView: React.FC = () => {
 
   const handleSavePaymentMethods = async () => {
     setSaving(true);
-    const res = await apiRequest('/api/settings/invoice', {
+    const res = await apiRequest('/api/settings/payment-methods', {
       method: 'PUT',
       body: JSON.stringify({
-        ...invoice,
         payment_methods: paymentMethods,
       }),
     });
     setSaving(false);
 
     if (res.success) {
-      toast.success('Daftar metode pembayaran berhasil diperbarui!');
+      toast.success('Daftar metode pembayaran berhasil disimpan dan diperbarui!');
     } else {
-      toast.error(res.message || 'Gagal menyimpan metode pembayaran');
+      // Fallback
+      setSaving(true);
+      const fallbackRes = await apiRequest('/api/settings/invoice', {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...invoice,
+          payment_methods: paymentMethods,
+        }),
+      });
+      setSaving(false);
+      if (fallbackRes.success) {
+        toast.success('Daftar metode pembayaran berhasil disimpan!');
+      } else {
+        toast.error(fallbackRes.message || res.message || 'Gagal menyimpan metode pembayaran');
+      }
     }
   };
 
@@ -434,12 +447,6 @@ export const SettingsView: React.FC = () => {
       '  1. Paket Wisata Sunrise Kawah Papandayan (10 Pax) = Rp 7.500.000\n  2. Sewa Peralatan Camping & Tenda Dome (5 Set) = Rp 5.000.000'
     )
     .replace(/\{metode_pembayaran\}/g, sampleActiveMethodsText)
-    .replace(
-      /\{link_download\}/g,
-      typeof window !== 'undefined'
-        ? `${window.location.origin}/?inv=INV%2F2026%2F10%2F0001&id=1`
-        : 'https://ais-applet.run.app/?inv=INV%2F2026%2F10%2F0001&id=1'
-    )
     .replace(
       /\{link_pdf\}/g,
       typeof window !== 'undefined'
@@ -1186,21 +1193,15 @@ export const SettingsView: React.FC = () => {
             {/* Live Sample Generated Links */}
             <div className="bg-white/90 rounded-xl p-3.5 border border-emerald-200/70 space-y-2 text-xs">
               <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider block">
-                Simulasi Tautan yang Diterima Pelanggan:
+                Tautan Unduh PDF Faktur Pelanggan (Tanpa Perlu Login):
               </span>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
-                <div className="p-2 bg-slate-50 rounded-lg border border-slate-200 truncate">
-                  <span className="text-slate-500 block text-[10px] font-sans font-bold">1. Link Faktur Web (Buka di Browser):</span>
-                  <span className="text-[#136239] font-bold">
-                    {(invoice.public_app_url || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '')}/?id=1&inv=INV%2F2026%2F10%2F0001
-                  </span>
-                </div>
-                <div className="p-2 bg-slate-50 rounded-lg border border-slate-200 truncate">
-                  <span className="text-slate-500 block text-[10px] font-sans font-bold">2. Link Unduh PDF Langsung (Streaming Server):</span>
-                  <span className="text-emerald-700 font-bold">
-                    {(invoice.public_app_url || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '')}/download-pdf?id=1
-                  </span>
-                </div>
+              <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-200 truncate font-mono text-[11px]">
+                <span className="text-slate-500 block text-[10px] font-sans font-bold mb-0.5">
+                  Link Unduh Dokumen PDF Resmi (Langsung Download):
+                </span>
+                <span className="text-emerald-700 font-bold">
+                  {(invoice.public_app_url || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '')}/download-pdf?id=1
+                </span>
               </div>
             </div>
 
@@ -1240,7 +1241,6 @@ export const SettingsView: React.FC = () => {
                 { tag: '{status}', label: 'Status Tagihan' },
                 { tag: '{rincian_barang}', label: 'Daftar Barang & Qty' },
                 { tag: '{metode_pembayaran}', label: 'Rekening & Metode Pembayaran' },
-                { tag: '{link_download}', label: 'Link Unduh / Web Faktur' },
                 { tag: '{link_pdf}', label: 'Link File PDF Langsung' },
                 { tag: '{catatan}', label: 'Catatan Faktur' },
                 { tag: '{nama_perusahaan}', label: 'Nama Perusahaan' },

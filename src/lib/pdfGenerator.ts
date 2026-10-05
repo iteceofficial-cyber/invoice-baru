@@ -28,9 +28,6 @@ Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ri
 🏦 *Metode Pembayaran Resmi:*
 {metode_pembayaran}
 
-🌐 *Lihat Faktur Web (Buka di Browser Tanpa Login):*
-{link_download}
-
 📥 *Unduh Langsung File PDF Resmi (Klik untuk Download):*
 {link_pdf}
 
