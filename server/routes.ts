@@ -4,6 +4,9 @@ import * as XLSX from 'xlsx';
 import multer from 'multer';
 import { queryAll, queryOne, runQuery, saveDb, DEFAULT_WHATSAPP_TEMPLATE, DEFAULT_PAYMENT_METHODS } from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { formatRupiah, formatDateIndo, terbilang } from '../src/lib/utils.ts';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1242,61 +1245,440 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
   }
 });
 
-// Public invoice view endpoint (unauthenticated for WhatsApp download links and customer access)
-apiRouter.get('/invoices/public/:identifier', (req: Request, res: Response) => {
-  try {
-    const { identifier } = req.params;
-    const rawVal = decodeURIComponent(identifier).trim();
+// ==========================================
+// PUBLIC INVOICE RESOLVER & SERVER-SIDE PDF GENERATOR
+// ==========================================
 
-    let invoice = queryOne<any>(
+function fetchPublicInvoiceData(rawIdentifier?: string, idParam?: any) {
+  let invoice: any = null;
+  const rawId = idParam ? Number(idParam) : -1;
+  const validId = !isNaN(rawId) && rawId > 0 ? rawId : -1;
+
+  // 1. Direct ID match if numeric ID is provided
+  if (validId > 0) {
+    invoice = queryOne<any>(
       `SELECT i.*, u.full_name as created_by_name
        FROM invoices i
        LEFT JOIN users u ON i.created_by_user_id = u.id
-       WHERE i.invoice_number = ? OR i.id = ?`,
-      [rawVal, !isNaN(Number(rawVal)) ? Number(rawVal) : -1]
+       WHERE i.id = ?`,
+      [validId]
+    );
+  }
+
+  // 2. Lookup by identifier / invoice_number
+  if (!invoice && rawIdentifier) {
+    const rawVal = decodeURIComponent(rawIdentifier).trim();
+    const asNum = !isNaN(Number(rawVal)) ? Number(rawVal) : -1;
+
+    // Exact invoice_number or ID
+    invoice = queryOne<any>(
+      `SELECT i.*, u.full_name as created_by_name
+       FROM invoices i
+       LEFT JOIN users u ON i.created_by_user_id = u.id
+       WHERE i.invoice_number = ? OR (i.id = ? AND ? > 0)`,
+      [rawVal, asNum, asNum]
     );
 
+    // Case-insensitive match
     if (!invoice) {
-      return res.status(404).json({ success: false, message: 'Faktur invoice tidak ditemukan' });
+      invoice = queryOne<any>(
+        `SELECT i.*, u.full_name as created_by_name
+         FROM invoices i
+         LEFT JOIN users u ON i.created_by_user_id = u.id
+         WHERE LOWER(TRIM(i.invoice_number)) = LOWER(?)`,
+        [rawVal]
+      );
     }
 
-    const items = queryAll(
-      `SELECT ii.*, p.stock as current_product_stock
-       FROM invoice_items ii
-       LEFT JOIN products p ON ii.product_id = p.id
-       WHERE ii.invoice_id = ?
-       ORDER BY ii.id ASC`,
-      [invoice.id]
-    );
-
-    const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
-    const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
-
-    let paymentMethods = DEFAULT_PAYMENT_METHODS;
-    if (settings?.payment_methods) {
-      try {
-        paymentMethods = JSON.parse(settings.payment_methods);
-      } catch {
-        paymentMethods = DEFAULT_PAYMENT_METHODS;
+    // Normalized match (strip /, -, _, space)
+    if (!invoice) {
+      const cleanInput = rawVal.replace(/[\/\-_ \s]/g, '').toLowerCase();
+      if (cleanInput.length >= 3) {
+        const allInvs = queryAll<any>(
+          `SELECT i.*, u.full_name as created_by_name FROM invoices i LEFT JOIN users u ON i.created_by_user_id = u.id`
+        );
+        invoice =
+          allInvs.find((inv) => {
+            const cleanInv = (inv.invoice_number || '').replace(/[\/\-_ \s]/g, '').toLowerCase();
+            return cleanInv === cleanInput || cleanInv.endsWith(cleanInput) || cleanInput.endsWith(cleanInv);
+          }) || null;
       }
     }
+  }
 
-    return res.json({
-      success: true,
-      data: {
-        ...invoice,
-        items,
-        company,
-        settings: {
-          ...settings,
-          whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
-          payment_methods: paymentMethods,
-        },
-        payment_methods: paymentMethods,
-      },
+  if (!invoice) return null;
+
+  const items = queryAll(
+    `SELECT ii.*, p.stock as current_product_stock
+     FROM invoice_items ii
+     LEFT JOIN products p ON ii.product_id = p.id
+     WHERE ii.invoice_id = ?
+     ORDER BY ii.id ASC`,
+    [invoice.id]
+  );
+
+  const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
+  const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
+
+  let paymentMethods = DEFAULT_PAYMENT_METHODS;
+  if (settings?.payment_methods) {
+    try {
+      paymentMethods = JSON.parse(settings.payment_methods);
+    } catch {
+      paymentMethods = DEFAULT_PAYMENT_METHODS;
+    }
+  }
+
+  return {
+    ...invoice,
+    items,
+    company,
+    settings: {
+      ...settings,
+      whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
+      payment_methods: paymentMethods,
+    },
+    payment_methods: paymentMethods,
+  };
+}
+
+function generateServerInvoicePdf(data: any): Buffer {
+  const JsPDFClass: any = (jsPDF as any).jsPDF || (jsPDF as any).default || jsPDF;
+  const runAutoTable: any = (autoTable as any).default || autoTable;
+  const doc = new JsPDFClass({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  // 1. Header Banner (Solid Forest Green Brand)
+  const headerHeight = 36;
+  doc.setFillColor(19, 98, 57); // #136239
+  doc.rect(0, 0, pageWidth, headerHeight, 'F');
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text(data.company?.company_name || 'Info Papandayan', margin, 13);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(220, 252, 231);
+  const companyAddress = data.company?.address || 'Jl. Kawah Papandayan, Karamat Wangi, Cisurupan, Kab. Garut';
+  doc.text(companyAddress, margin, 19);
+
+  const phoneWeb = `WhatsApp: ${data.company?.phone || '+62 822-4063-0123'}  |  Website: ${data.company?.website || 'https://infopapandayan.com'}`;
+  doc.text(phoneWeb, margin, 24);
+
+  const bankHeader = `Bank Mandiri: ${data.bank_account_no || '131-00-1849201-8'} (a.n. Info Papandayan)`;
+  doc.text(bankHeader, margin, 29);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(255, 255, 255);
+  doc.text('FAKTUR INVOICE RESMI', pageWidth - margin, 15, { align: 'right' });
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(220, 252, 231);
+  doc.text('Dokumen Penagihan Sah', pageWidth - margin, 21, { align: 'right' });
+
+  // 2. Client & Transaction Details
+  const infoY = headerHeight + 5;
+
+  // Left: Bill To
+  doc.setFillColor(240, 253, 244);
+  doc.roundedRect(margin, infoY, 92, 26, 1.5, 1.5, 'F');
+  doc.setDrawColor(187, 247, 208);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(margin, infoY, 92, 26, 1.5, 1.5, 'S');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(19, 98, 57);
+  doc.text('DITAGIHKAN KEPADA (KLIEN):', margin + 3.5, infoY + 5);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(15, 23, 42);
+  const custNameLines = doc.splitTextToSize(data.customer_name || 'Pelanggan', 85);
+  doc.text(custNameLines, margin + 3.5, infoY + 12);
+
+  if (data.customer_phone) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`No. Kontak: ${data.customer_phone}`, margin + 3.5, infoY + 21);
+  }
+
+  // Right: Transaction Details
+  const rightX = pageWidth - margin - 88;
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(rightX, infoY, 88, 26, 1.5, 1.5, 'F');
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(rightX, infoY, 88, 26, 1.5, 1.5, 'S');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(19, 98, 57);
+  doc.text('DETAIL TRANSAKSI & FAKTUR:', rightX + 3.5, infoY + 5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(71, 85, 105);
+  doc.text('Nomor Faktur', rightX + 3.5, infoY + 10);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(19, 98, 57);
+  doc.text(`: ${data.invoice_number}`, rightX + 26, infoY + 10);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text('Tanggal', rightX + 3.5, infoY + 15);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(15, 23, 42);
+  doc.text(`: ${formatDateIndo(data.activity_date)}`, rightX + 26, infoY + 15);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(71, 85, 105);
+  doc.text('Status', rightX + 3.5, infoY + 20);
+  doc.setFont('helvetica', 'bold');
+  if (data.status === 'paid') {
+    doc.setTextColor(22, 101, 52);
+    doc.text(': LUNAS (PAID)', rightX + 26, infoY + 20);
+  } else {
+    doc.setTextColor(180, 83, 9);
+    doc.text(': MENUNGGU PEMBAYARAN', rightX + 26, infoY + 20);
+  }
+
+  // 3. Items Table
+  const tableStartY = infoY + 29;
+  const tableBody = (data.items || []).map((item: any, idx: number) => [
+    idx + 1,
+    item.product_name,
+    `${item.qty} ${item.unit || 'Pcs'}`,
+    formatRupiah(item.price),
+    formatRupiah(item.subtotal),
+  ]);
+
+  runAutoTable(doc, {
+    startY: tableStartY,
+    margin: { left: margin, right: margin },
+    head: [['No', 'Deskripsi Barang / Layanan', 'Qty', 'Harga Satuan', 'Subtotal']],
+    body: tableBody,
+    theme: 'grid',
+    styles: {
+      fontSize: 8,
+      cellPadding: 2.2,
+      textColor: [30, 41, 59],
+      lineColor: [209, 250, 229],
+      lineWidth: 0.15,
+    },
+    headStyles: {
+      fillColor: [19, 98, 57],
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      halign: 'center',
+    },
+    columnStyles: {
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 'auto', halign: 'left' },
+      2: { cellWidth: 22, halign: 'center' },
+      3: { cellWidth: 32, halign: 'right' },
+      4: { cellWidth: 36, halign: 'right', fontStyle: 'bold' },
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252],
+    },
+  });
+
+  const finalY = (doc as any).lastAutoTable?.finalY || tableStartY + 35;
+
+  // 4. Terbilang & Payments (Left) + Totals (Right)
+  // Left: Terbilang
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(margin, finalY + 4, 102, 11, 1, 1, 'F');
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.2);
+  doc.roundedRect(margin, finalY + 4, 102, 11, 1, 1, 'S');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.8);
+  doc.setTextColor(100, 116, 139);
+  doc.text('TERBILANG:', margin + 3, finalY + 8);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.2);
+  doc.setTextColor(19, 98, 57);
+  const terbilangLines = doc.splitTextToSize(`"${terbilang(data.total_amount)}"`, 96);
+  doc.text(terbilangLines, margin + 3, finalY + 12);
+
+  // Left: Payment methods
+  const activeMethods = (data.payment_methods || []).filter((m: any) => m.is_active);
+  let payBoxHeight = Math.min(26, 9 + (activeMethods.length || 1) * 4.5);
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(margin, finalY + 17, 102, payBoxHeight, 1, 1, 'F');
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.2);
+  doc.roundedRect(margin, finalY + 17, 102, payBoxHeight, 1, 1, 'S');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.2);
+  doc.setTextColor(19, 98, 57);
+  doc.text('METODE PEMBAYARAN RESMI:', margin + 3, finalY + 21);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(51, 65, 85);
+  let payLineY = finalY + 25;
+  if (activeMethods.length > 0) {
+    activeMethods.slice(0, 3).forEach((m: any) => {
+      doc.text(`• ${m.name}: ${m.account_no} (a.n. ${m.account_name})`, margin + 3, payLineY);
+      payLineY += 4.5;
     });
+  } else {
+    doc.text(`Bank Mandiri: ${data.bank_account_no || '131-00-1849201-8'} (a.n. Info Papandayan)`, margin + 3, payLineY);
+  }
+
+  // Right: Summary & Total
+  const sumX = pageWidth - margin - 65;
+  let currSumY = finalY + 5;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(71, 85, 105);
+  doc.text('Subtotal', sumX, currSumY);
+  doc.setFont('helvetica', 'bold');
+  doc.text(formatRupiah(data.subtotal || 0), pageWidth - margin, currSumY, { align: 'right' });
+
+  if (data.discount_amount > 0) {
+    currSumY += 5;
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(220, 38, 38);
+    doc.text('Potongan Diskon', sumX, currSumY);
+    doc.text(`- ${formatRupiah(data.discount_amount)}`, pageWidth - margin, currSumY, { align: 'right' });
+  }
+
+  currSumY += 7;
+  // Total Highlight Box
+  doc.setFillColor(19, 98, 57);
+  doc.roundedRect(sumX - 2, currSumY - 4, 67, 10, 1.5, 1.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text('TOTAL TAGIHAN', sumX, currSumY + 2.5);
+  doc.text(formatRupiah(data.total_amount), pageWidth - margin - 1, currSumY + 2.5, { align: 'right' });
+
+  // Notes
+  if (data.notes) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.setTextColor(19, 98, 57);
+    doc.text('CATATAN / KETENTUAN:', margin, finalY + 46);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    doc.setTextColor(71, 85, 105);
+    const splitNotes = doc.splitTextToSize(data.notes, pageWidth - margin * 2);
+    doc.text(splitNotes, margin, finalY + 50);
+  }
+
+  // Footer Banner / Bottom bar
+  doc.setFillColor(19, 98, 57);
+  doc.rect(0, pageHeight - 8, pageWidth, 8, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text(
+    `© ${new Date().getFullYear()} ${data.company?.company_name || 'Info Papandayan'}. Faktur resmi diterbitkan secara elektronik.`,
+    pageWidth / 2,
+    pageHeight - 3,
+    { align: 'center' }
+  );
+
+  return Buffer.from(doc.output('arraybuffer'));
+}
+
+// 1. Direct PDF download endpoint (streams PDF binary directly to browser/WhatsApp)
+apiRouter.get('/invoices/public/pdf', (req: Request, res: Response) => {
+  try {
+    const rawVal = (req.query.inv || req.query.invoice || req.query.number || req.query.identifier || '') as string;
+    const invoice = fetchPublicInvoiceData(rawVal, req.query.id);
+    if (!invoice) {
+      return res.status(404).send('Faktur invoice tidak ditemukan atau tautan telah kedaluwarsa.');
+    }
+    const pdfBuffer = generateServerInvoicePdf(invoice);
+    const safeNum = (invoice.invoice_number || 'INV').replace(/[\/\\]/g, '-');
+    const isAttachment = req.query.download === '1' || req.query.attachment === '1';
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `${isAttachment ? 'attachment' : 'inline'}; filename="Invoice-${safeNum}.pdf"`
+    );
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (err: any) {
+    return res.status(500).send('Gagal mengunduh file PDF: ' + err.message);
+  }
+});
+
+apiRouter.get('/invoices/public/download-pdf', (req: Request, res: Response) => {
+  try {
+    const rawVal = (req.query.inv || req.query.invoice || req.query.number || req.query.identifier || '') as string;
+    const invoice = fetchPublicInvoiceData(rawVal, req.query.id);
+    if (!invoice) {
+      return res.status(404).send('Faktur invoice tidak ditemukan atau tautan telah kedaluwarsa.');
+    }
+    const pdfBuffer = generateServerInvoicePdf(invoice);
+    const safeNum = (invoice.invoice_number || 'INV').replace(/[\/\\]/g, '-');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Invoice-${safeNum}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (err: any) {
+    return res.status(500).send('Gagal mengunduh file PDF: ' + err.message);
+  }
+});
+
+// 2. Public invoice JSON endpoint via query parameters
+apiRouter.get('/invoices/public', (req: Request, res: Response) => {
+  try {
+    const rawVal = (req.query.inv || req.query.invoice || req.query.number || req.query.identifier || req.query.no || req.query.faktur || '') as string;
+    const invoice = fetchPublicInvoiceData(rawVal, req.query.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Faktur invoice tidak ditemukan atau telah dihapus' });
+    }
+    return res.json({ success: true, data: invoice });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal memuat detail invoice publik: ' + err.message });
+  }
+});
+
+// 3. Public invoice wildcard route (matches /invoices/public/INV/2026/10/0001, /invoices/public/1, etc.)
+apiRouter.get('/invoices/public/*', (req: Request, res: Response) => {
+  try {
+    const wildcardPath = req.params[0] || '';
+    if (wildcardPath.endsWith('/pdf') || wildcardPath.endsWith('/download')) {
+      const cleanPath = wildcardPath.replace(/\/(pdf|download)$/, '');
+      const invoice = fetchPublicInvoiceData(cleanPath, req.query.id);
+      if (!invoice) return res.status(404).send('Faktur invoice tidak ditemukan');
+      const pdfBuffer = generateServerInvoicePdf(invoice);
+      const safeNum = (invoice.invoice_number || 'INV').replace(/[\/\\]/g, '-');
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="Invoice-${safeNum}.pdf"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      return res.end(pdfBuffer);
+    }
+
+    const invoice = fetchPublicInvoiceData(wildcardPath, req.query.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Faktur invoice tidak ditemukan atau telah dihapus' });
+    }
+    return res.json({ success: true, data: invoice });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal memuat detail invoice: ' + err.message });
   }
 });
 

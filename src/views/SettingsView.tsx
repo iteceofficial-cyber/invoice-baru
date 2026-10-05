@@ -337,8 +337,14 @@ export const SettingsView: React.FC = () => {
     .replace(
       /\{link_download\}/g,
       typeof window !== 'undefined'
-        ? `${window.location.origin}/?inv=INV%2F2026%2F10%2F0001`
-        : 'https://ais-applet.run.app/?inv=INV%2F2026%2F10%2F0001'
+        ? `${window.location.origin}/?inv=INV%2F2026%2F10%2F0001&id=1`
+        : 'https://ais-applet.run.app/?inv=INV%2F2026%2F10%2F0001&id=1'
+    )
+    .replace(
+      /\{link_pdf\}/g,
+      typeof window !== 'undefined'
+        ? `${window.location.origin}/api/invoices/public/download-pdf?inv=INV%2F2026%2F10%2F0001&id=1`
+        : 'https://ais-applet.run.app/api/invoices/public/download-pdf?inv=INV%2F2026%2F10%2F0001&id=1'
     )
     .replace(/\{catatan\}/g, '📝 *Catatan:* Pembayaran mohon dikonfirmasi maksimal H-2 kegiatan.')
     .replace(/\{nama_perusahaan\}/g, company.company_name || 'Info Papandayan')
@@ -1006,7 +1012,8 @@ export const SettingsView: React.FC = () => {
                 { tag: '{status}', label: 'Status Tagihan' },
                 { tag: '{rincian_barang}', label: 'Daftar Barang & Qty' },
                 { tag: '{metode_pembayaran}', label: 'Rekening & Metode Pembayaran' },
-                { tag: '{link_download}', label: 'Link Unduh / Download PDF' },
+                { tag: '{link_download}', label: 'Link Unduh / Web Faktur' },
+                { tag: '{link_pdf}', label: 'Link File PDF Langsung' },
                 { tag: '{catatan}', label: 'Catatan Faktur' },
                 { tag: '{nama_perusahaan}', label: 'Nama Perusahaan' },
                 { tag: '{telepon_perusahaan}', label: 'No. Telepon' },

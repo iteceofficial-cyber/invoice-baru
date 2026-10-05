@@ -22,11 +22,41 @@ function MainAppContent() {
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Check if public invoice URL parameter is present (?inv=... or ?invoice=...)
+  // Check if public invoice URL parameter is present (?inv=..., ?id=..., or /invoice/...)
   const [publicInvoiceIdentifier, setPublicInvoiceIdentifier] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      return params.get('inv') || params.get('invoice') || params.get('public_invoice') || null;
+      const search = window.location.search;
+      const pathname = window.location.pathname;
+      const hash = window.location.hash;
+
+      const params = new URLSearchParams(search);
+      let val =
+        params.get('inv') ||
+        params.get('invoice') ||
+        params.get('public_invoice') ||
+        params.get('id') ||
+        params.get('no') ||
+        params.get('nomor') ||
+        params.get('faktur');
+      if (val) return val;
+
+      if (hash && hash.includes('?')) {
+        const hashParams = new URLSearchParams(hash.split('?')[1]);
+        val =
+          hashParams.get('inv') ||
+          hashParams.get('invoice') ||
+          hashParams.get('public_invoice') ||
+          hashParams.get('id') ||
+          hashParams.get('no') ||
+          hashParams.get('nomor');
+        if (val) return val;
+      }
+
+      // Check pathname (e.g., /invoice/INV/2026/10/0001, /inv/1, /download/INV-...)
+      const pathMatch = pathname.match(/^\/(?:invoice|inv|download|unduh|public-invoice|faktur)\/(.+)$/i);
+      if (pathMatch && pathMatch[1]) {
+        return decodeURIComponent(pathMatch[1]);
+      }
     }
     return null;
   });

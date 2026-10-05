@@ -59,10 +59,25 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
 
   if (!isOpen) return null;
 
+  const [pdfCopied, setPdfCopied] = useState(false);
+
+  const idQuery = data.id ? `&id=${data.id}` : '';
   const downloadUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/?inv=${encodeURIComponent(data.invoice_number)}`
-      : `/?inv=${encodeURIComponent(data.invoice_number)}`;
+      ? `${window.location.origin}/?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`
+      : `/?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`;
+
+  const directPdfUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/api/invoices/public/download-pdf?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`
+      : `/api/invoices/public/download-pdf?inv=${encodeURIComponent(data.invoice_number)}${idQuery}`;
+
+  const handleCopyPdfLink = () => {
+    navigator.clipboard.writeText(directPdfUrl);
+    setPdfCopied(true);
+    toast.success('Link langsung unduh PDF berhasil disalin');
+    setTimeout(() => setPdfCopied(false), 2000);
+  };
 
   const handleDownload = () => {
     generateInvoicePDF(data, 'download');
@@ -440,37 +455,72 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
               </div>
 
               {/* Tautan Link Download Invoice Resmi */}
-              <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-[#136239] flex items-center gap-1.5">
-                    <Link2 className="w-3.5 h-3.5" />
-                    <span>Link Download Invoice Pelanggan (Otomatis disertakan):</span>
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={handleCopyLink}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 transition cursor-pointer"
-                    >
-                      {linkCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                      <span>{linkCopied ? 'Tersalin' : 'Salin'}</span>
-                    </button>
-                    <a
-                      href={downloadUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 transition"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      <span>Buka</span>
-                    </a>
+              <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3 space-y-2">
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-[#136239] flex items-center gap-1.5">
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>Link Web Faktur Publik (Buka di Browser Tanpa Login):</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleCopyLink}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 transition cursor-pointer"
+                      >
+                        {linkCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                        <span>{linkCopied ? 'Tersalin' : 'Salin'}</span>
+                      </button>
+                      <a
+                        href={downloadUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 transition"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Buka</span>
+                      </a>
+                    </div>
                   </div>
+                  <p className="text-[11px] font-mono text-emerald-950 bg-white/80 px-2 py-1 rounded border border-emerald-200 truncate select-all mt-1">
+                    {downloadUrl}
+                  </p>
                 </div>
-                <p className="text-[11px] font-mono text-emerald-950 bg-white/80 px-2 py-1 rounded border border-emerald-200 truncate select-all">
-                  {downloadUrl}
-                </p>
+
+                <div className="pt-1 border-t border-emerald-200/60">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-[#136239] flex items-center gap-1.5">
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Link Unduh File PDF Langsung:</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleCopyPdfLink}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 transition cursor-pointer"
+                      >
+                        {pdfCopied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                        <span>{pdfCopied ? 'Tersalin' : 'Salin PDF'}</span>
+                      </button>
+                      <a
+                        href={directPdfUrl}
+                        download={`Invoice-${(data.invoice_number || 'INV').replace(/[\/\\]/g, '-')}.pdf`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 transition"
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Unduh</span>
+                      </a>
+                    </div>
+                  </div>
+                  <p className="text-[11px] font-mono text-emerald-950 bg-white/80 px-2 py-1 rounded border border-emerald-200 truncate select-all mt-1">
+                    {directPdfUrl}
+                  </p>
+                </div>
+
                 <p className="text-[10px] text-emerald-800">
-                  Pelanggan dapat langsung membuka tautan ini di smartphone atau PC untuk mengunduh dan mencetak PDF faktur resmi tanpa perlu login.
+                  Pelanggan dapat langsung membuka tautan ini di smartphone atau PC untuk mengunduh dan mencetak PDF faktur resmi secara instan tanpa perlu akun atau login.
                 </p>
               </div>
 

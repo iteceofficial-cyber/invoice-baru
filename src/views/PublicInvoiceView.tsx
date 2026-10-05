@@ -30,31 +30,66 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [invoiceData, setInvoiceData] = useState<InvoicePDFData | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [searchVal, setSearchVal] = useState(invoiceIdentifier || '');
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
-    loadInvoice();
+    loadInvoice(invoiceIdentifier);
   }, [invoiceIdentifier]);
 
-  const loadInvoice = async () => {
+  const loadInvoice = async (targetId?: string) => {
+    const target = (targetId || invoiceIdentifier || '').trim();
+    if (!target) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await apiRequest(`/api/invoices/public/${encodeURIComponent(invoiceIdentifier)}`);
+      const params = new URLSearchParams(window.location.search);
+      const idParam = params.get('id');
+      const queryStr = new URLSearchParams();
+      queryStr.set('inv', target);
+      if (idParam) queryStr.set('id', idParam);
+
+      // Primary: query parameter based endpoint (immune to slash bugs)
+      let res = await apiRequest(`/api/invoices/public?${queryStr.toString()}`);
+
+      // Fallback: wildcard path endpoint
+      if (!res.success) {
+        res = await apiRequest(`/api/invoices/public/${encodeURIComponent(target)}`);
+      }
+
       if (res.success && res.data) {
         setInvoiceData(res.data);
+
+        // Auto download if requested in URL (?download=1 or ?unduh=1 or ?action=download)
+        const autoDownload =
+          params.get('download') === '1' ||
+          params.get('download') === 'true' ||
+          params.get('action') === 'download' ||
+          params.get('unduh') === '1';
+
+        if (autoDownload) {
+          setTimeout(() => {
+            generateInvoicePDF(res.data, 'download');
+          }, 350);
+        }
       } else {
-        setError(res.message || 'Faktur invoice tidak ditemukan atau telah dihapus');
+        setError(res.message || 'Faktur invoice tidak ditemukan atau tautan telah kedaluwarsa');
       }
     } catch (err: any) {
-      setError(err?.message || 'Gagal memuat invoice. Silakan coba beberapa saat lagi.');
+      setError(err?.message || 'Gagal memuat invoice. Silakan periksa koneksi internet Anda.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!invoiceData) return;
-    generateInvoicePDF(invoiceData, 'download');
+    setDownloading(true);
+    try {
+      await generateInvoicePDF(invoiceData, 'download');
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const handlePrint = () => {
@@ -83,7 +118,7 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
       <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-4">
         <div className="w-12 h-12 border-4 border-[#136239] border-t-transparent rounded-full animate-spin mb-4" />
         <p className="text-sm font-bold text-slate-700">Memuat Faktur Resmi Pelanggan...</p>
-        <p className="text-xs text-slate-400 mt-1">Info Papandayan - Invoice & Logistik</p>
+        <p className="text-xs text-slate-400 mt-1">Info Papandayan - Akses Publik Tanpa Login</p>
       </div>
     );
   }
@@ -96,24 +131,56 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
             <AlertCircle className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Invoice Tidak Ditemukan</h2>
+            <h2 className="text-lg font-bold text-slate-900">Invoice Belum Ditemukan</h2>
             <p className="text-xs text-slate-500 mt-1">
-              {error || 'Nomor faktur invoice tidak terdaftar atau tautan telah kedaluwarsa.'}
+              {error || 'Nomor faktur invoice tidak terdaftar atau tautan dari WhatsApp terpotong.'}
             </p>
           </div>
+
+          <div className="pt-3 border-t border-slate-100 space-y-3 text-left">
+            <label className="text-[11px] font-semibold text-slate-700 block">
+              Cari Faktur dengan Nomor Invoice / ID:
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={searchVal}
+                onChange={(e) => setSearchVal(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && searchVal.trim()) {
+                    loadInvoice(searchVal.trim());
+                  }
+                }}
+                placeholder="Contoh: INV/2026/10/0001 atau 1"
+                className="flex-1 px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#136239]"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (searchVal.trim()) {
+                    loadInvoice(searchVal.trim());
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-[#136239] text-white text-xs font-bold hover:bg-[#0f4d2d] transition cursor-pointer"
+              >
+                Cari
+              </button>
+            </div>
+          </div>
+
           <div className="pt-2 border-t border-slate-100 flex flex-col gap-2">
             <button
               onClick={() => (window.location.href = '/')}
-              className="w-full py-2.5 px-4 rounded-xl bg-[#136239] text-white text-xs font-bold hover:bg-[#0f4d2d] transition"
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer"
             >
               Kembali ke Beranda
             </button>
             {onGoToLogin && (
               <button
                 onClick={onGoToLogin}
-                className="w-full py-2 px-4 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                className="w-full py-2 px-4 text-xs font-medium text-slate-400 hover:text-slate-600 cursor-pointer"
               >
-                Masuk ke Login Admin
+                Khusus Staf/Admin: Masuk ke Login Sistem
               </button>
             )}
           </div>
@@ -172,11 +239,56 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
 
             <button
               onClick={handleDownloadPDF}
+              disabled={downloading}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-white text-xs font-bold shadow-md shadow-emerald-950/20 transition cursor-pointer"
             >
               <Download className="w-4 h-4" />
-              <span>Unduh PDF Resmi</span>
+              <span>{downloading ? 'Memproses...' : 'Unduh PDF Resmi'}</span>
             </button>
+          </div>
+        </div>
+
+        {/* Prominent Direct Download Banner */}
+        <div className="bg-[#136239] text-white rounded-2xl p-4 sm:p-5 shadow-lg border border-emerald-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <Download className="w-5 h-5 text-emerald-300" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-[10px] font-extrabold text-emerald-300 uppercase tracking-wider">
+                  Akses Terbuka — Siap Diunduh Tanpa Login
+                </span>
+              </div>
+              <h3 className="text-sm sm:text-base font-bold text-white">
+                Unduh Faktur PDF Resmi Info Papandayan
+              </h3>
+              <p className="text-xs text-emerald-100/80 mt-0.5">
+                Dokumen resmi dalam format PDF standar A4 siap disimpan atau dicetak langsung ke perangkat Anda.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0">
+            <button
+              onClick={handleDownloadPDF}
+              disabled={downloading}
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-emerald-50 text-[#136239] text-xs font-extrabold shadow-md transition cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>{downloading ? 'Membuat PDF...' : 'Unduh PDF Sekarang'}</span>
+            </button>
+
+            <a
+              href={`/api/invoices/public/download-pdf?inv=${encodeURIComponent(invoiceData.invoice_number)}&id=${invoiceData.id}`}
+              download={`Invoice-${(invoiceData.invoice_number || 'INV').replace(/[\/\\]/g, '-')}.pdf`}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-emerald-800/80 hover:bg-emerald-800 text-emerald-100 text-xs font-semibold border border-emerald-700/80 transition"
+              title="Link alternatif download langsung dari server"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Download Server</span>
+            </a>
           </div>
         </div>
 

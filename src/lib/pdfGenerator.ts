@@ -791,13 +791,16 @@ export function buildWhatsAppInvoiceMessage(
     paymentText = `Bank: ${data.bank_name || 'Bank Mandiri KCP Garut'}\nNo. Rekening: ${data.bank_account_no || '131-00-1849201-8'}\nAtas Nama: ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`;
   }
 
-  // Generate public download link
+  // Generate public download link (interactive web view & direct PDF link)
   const cleanInvNumber = encodeURIComponent(data.invoice_number);
+  const idQuery = data.id ? `&id=${data.id}` : '';
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const downloadLink =
     downloadUrlOverride ||
-    (typeof window !== 'undefined'
-      ? `${window.location.origin}/?inv=${cleanInvNumber}`
-      : `/?inv=${cleanInvNumber}`);
+    (origin ? `${origin}/?inv=${cleanInvNumber}${idQuery}` : `/?inv=${cleanInvNumber}${idQuery}`);
+  const directPdfLink = origin
+    ? `${origin}/api/invoices/public/download-pdf?inv=${cleanInvNumber}${idQuery}`
+    : `/api/invoices/public/download-pdf?inv=${cleanInvNumber}${idQuery}`;
 
   const defaultTemplate = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
 
@@ -840,6 +843,9 @@ Website: {website_perusahaan}`;
     .replace(/\{rincian_barang\}/g, itemsList)
     .replace(/\{metode_pembayaran\}/g, paymentText)
     .replace(/\{link_download\}/g, downloadLink)
+    .replace(/\{link_unduh\}/g, downloadLink)
+    .replace(/\{link_pdf\}/g, directPdfLink)
+    .replace(/\{link_direct\}/g, directPdfLink)
     .replace(/\{catatan\}/g, notesText)
     .replace(/\{nama_perusahaan\}/g, data.company?.company_name || 'Info Papandayan')
     .replace(/\{telepon_perusahaan\}/g, data.company?.phone || '+62 822-4063-0123 / +62 813-2127-3552')
