@@ -14,12 +14,22 @@ import { SettingsView } from './views/SettingsView.tsx';
 import { UsersView } from './views/UsersView.tsx';
 import { ActivityLogsView } from './views/ActivityLogsView.tsx';
 import { ChangePasswordView } from './views/ChangePasswordView.tsx';
+import { PublicInvoiceView } from './views/PublicInvoiceView.tsx';
 import { apiRequest } from './services/api.ts';
 
 function MainAppContent() {
   const { isAuthenticated, isLoading, isSuperAdmin } = useAuth();
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Check if public invoice URL parameter is present (?inv=... or ?invoice=...)
+  const [publicInvoiceIdentifier, setPublicInvoiceIdentifier] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('inv') || params.get('invoice') || params.get('public_invoice') || null;
+    }
+    return null;
+  });
 
   // Cross-view state
   const [editInvoiceId, setEditInvoiceId] = useState<number | null>(null);
@@ -55,6 +65,19 @@ function MainAppContent() {
       // Keep default fallback branding
     }
   };
+
+  // If public invoice download/view link is accessed
+  if (publicInvoiceIdentifier) {
+    return (
+      <PublicInvoiceView
+        invoiceIdentifier={publicInvoiceIdentifier}
+        onGoToLogin={() => {
+          setPublicInvoiceIdentifier(null);
+          window.history.replaceState({}, '', '/');
+        }}
+      />
+    );
+  }
 
   // If loading authentication state
   if (isLoading) {

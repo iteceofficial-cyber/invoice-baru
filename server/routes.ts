@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import * as XLSX from 'xlsx';
 import multer from 'multer';
-import { queryAll, queryOne, runQuery, saveDb } from './db.ts';
+import { queryAll, queryOne, runQuery, saveDb, DEFAULT_WHATSAPP_TEMPLATE, DEFAULT_PAYMENT_METHODS } from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
 
 const upload = multer({
@@ -1174,6 +1174,64 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
   }
 });
 
+// Public invoice view endpoint (unauthenticated for WhatsApp download links and customer access)
+apiRouter.get('/invoices/public/:identifier', (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+    const rawVal = decodeURIComponent(identifier).trim();
+
+    let invoice = queryOne<any>(
+      `SELECT i.*, u.full_name as created_by_name
+       FROM invoices i
+       LEFT JOIN users u ON i.created_by_user_id = u.id
+       WHERE i.invoice_number = ? OR i.id = ?`,
+      [rawVal, !isNaN(Number(rawVal)) ? Number(rawVal) : -1]
+    );
+
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Faktur invoice tidak ditemukan' });
+    }
+
+    const items = queryAll(
+      `SELECT ii.*, p.stock as current_product_stock
+       FROM invoice_items ii
+       LEFT JOIN products p ON ii.product_id = p.id
+       WHERE ii.invoice_id = ?
+       ORDER BY ii.id ASC`,
+      [invoice.id]
+    );
+
+    const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
+    const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
+
+    let paymentMethods = DEFAULT_PAYMENT_METHODS;
+    if (settings?.payment_methods) {
+      try {
+        paymentMethods = JSON.parse(settings.payment_methods);
+      } catch {
+        paymentMethods = DEFAULT_PAYMENT_METHODS;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...invoice,
+        items,
+        company,
+        settings: {
+          ...settings,
+          whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
+          payment_methods: paymentMethods,
+        },
+        payment_methods: paymentMethods,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal memuat detail invoice publik: ' + err.message });
+  }
+});
+
 // Get single invoice details with items and company settings
 apiRouter.get('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -1200,7 +1258,16 @@ apiRouter.get('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
     );
 
     const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
-    const settings = queryOne('SELECT * FROM invoice_settings WHERE id = 1');
+    const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
+
+    let paymentMethods = DEFAULT_PAYMENT_METHODS;
+    if (settings?.payment_methods) {
+      try {
+        paymentMethods = JSON.parse(settings.payment_methods);
+      } catch {
+        paymentMethods = DEFAULT_PAYMENT_METHODS;
+      }
+    }
 
     return res.json({
       success: true,
@@ -1208,7 +1275,12 @@ apiRouter.get('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
         ...invoice,
         items,
         company,
-        settings,
+        settings: {
+          ...settings,
+          whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
+          payment_methods: paymentMethods,
+        },
+        payment_methods: paymentMethods,
       },
     });
   } catch (err: any) {
@@ -2107,8 +2179,24 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
 
 apiRouter.get('/settings/invoice', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const settings = queryOne('SELECT * FROM invoice_settings WHERE id = 1');
-    return res.json({ success: true, data: settings });
+    const settings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
+    let paymentMethods = DEFAULT_PAYMENT_METHODS;
+    if (settings?.payment_methods) {
+      try {
+        paymentMethods = JSON.parse(settings.payment_methods);
+      } catch {
+        paymentMethods = DEFAULT_PAYMENT_METHODS;
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...settings,
+        whatsapp_template: settings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE,
+        payment_methods: paymentMethods,
+      },
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal memuat pengaturan invoice: ' + err.message });
   }
@@ -2134,6 +2222,8 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
       app_name,
       header_image_url,
       footer_image_url,
+      whatsapp_template,
+      payment_methods,
     } = req.body;
 
     const isSuperAdmin = req.user?.role_name === 'Super Admin' || req.user?.role_id === 1;
@@ -2154,13 +2244,26 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
       if (footer_image_url !== undefined) finalFooterImage = footer_image_url;
     }
 
+    const finalWhatsAppTemplate =
+      whatsapp_template !== undefined
+        ? whatsapp_template
+        : currentSettings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE;
+
+    let finalPaymentMethods = currentSettings?.payment_methods || JSON.stringify(DEFAULT_PAYMENT_METHODS);
+    if (payment_methods !== undefined) {
+      finalPaymentMethods =
+        typeof payment_methods === 'string' ? payment_methods : JSON.stringify(payment_methods);
+    }
+
     runQuery(
       `UPDATE invoice_settings
        SET prefix = ?, number_format = ?, start_number = ?, date_format = ?, currency = ?,
            default_tax_percent = ?, default_discount = ?, default_notes = ?,
            signature_text = ?, signer_name = ?, signer_title = ?, footer_text = ?,
            primary_color = ?, secondary_color = ?, app_name = ?,
-           header_image_url = ?, footer_image_url = ?, updated_at = datetime('now', 'localtime')
+           header_image_url = ?, footer_image_url = ?,
+           whatsapp_template = ?, payment_methods = ?,
+           updated_at = datetime('now', 'localtime')
        WHERE id = 1`,
       [
         prefix?.trim() || 'INV',
@@ -2180,6 +2283,8 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
         app_name || 'Info Papandayan - Invoice & Logistik',
         finalHeaderImage,
         finalFooterImage,
+        finalWhatsAppTemplate,
+        finalPaymentMethods,
       ]
     );
 
@@ -2189,16 +2294,23 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
       req.user?.id || null,
       req.user?.username || 'admin',
       'Mengubah Pengaturan',
-      `Memperbarui konfigurasi invoice, tampilan, serta kop & footer dokumen${isSuperAdmin && (header_image_url || footer_image_url) ? ' (Super Admin Custom Header/Footer)' : ''}`,
+      `Memperbarui konfigurasi invoice, template pesan WhatsApp, metode pembayaran, serta kop & footer dokumen`,
       req.ip
     );
 
+    let parsedMethods = DEFAULT_PAYMENT_METHODS;
+    try {
+      parsedMethods = JSON.parse(finalPaymentMethods);
+    } catch {}
+
     return res.json({
       success: true,
-      message: 'Pengaturan invoice, warna, serta header dan footer berhasil disimpan',
+      message: 'Pengaturan invoice, template WhatsApp, dan metode pembayaran berhasil disimpan',
       data: {
         header_image_url: finalHeaderImage,
         footer_image_url: finalFooterImage,
+        whatsapp_template: finalWhatsAppTemplate,
+        payment_methods: parsedMethods,
       },
     });
   } catch (err: any) {

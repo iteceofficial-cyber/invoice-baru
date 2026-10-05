@@ -13,6 +13,82 @@ const DATA_DIR = isVercel ? '/tmp/data' : path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.sqlite');
 const SEED_FILE = path.resolve(process.cwd(), 'data', 'database.sqlite');
 
+export const DEFAULT_WHATSAPP_TEMPLATE = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
+
+Yth. Bapak/Ibu *{nama_pelanggan}*,
+Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ringkasan faktur tagihan Anda:
+
+📄 *No. Invoice:* {nomor_invoice}
+📅 *Tanggal Kegiatan:* {tanggal}
+🏷️ *Total Tagihan:* *{total}*
+💳 *Status:* *{status}*
+
+📋 *Rincian Layanan/Barang:*
+{rincian_barang}
+
+🏦 *Metode Pembayaran Resmi:*
+{metode_pembayaran}
+
+📥 *Link Unduh / Cetak Invoice:*
+{link_download}
+
+{catatan}
+
+Faktur invoice resmi dalam format PDF siap diunduh melalui tautan di atas. Silakan hubungi kami apabila memerlukan penyesuaian.
+
+Salam hangat,
+*{nama_perusahaan}*
+WhatsApp: {telepon_perusahaan}
+Website: {website_perusahaan}`;
+
+export const DEFAULT_PAYMENT_METHODS = [
+  {
+    id: 'mandiri-1',
+    name: 'Bank Mandiri',
+    category: 'bank',
+    account_no: '131-00-1849201-8',
+    account_name: 'Info Papandayan',
+    notes: 'KCP Garut',
+    is_active: true,
+  },
+  {
+    id: 'bca-1',
+    name: 'Bank BCA',
+    category: 'bank',
+    account_no: '148-098-7654',
+    account_name: 'Info Papandayan',
+    notes: 'KCU Garut',
+    is_active: true,
+  },
+  {
+    id: 'bri-1',
+    name: 'Bank BRI',
+    category: 'bank',
+    account_no: '0102-01-098765-50-1',
+    account_name: 'Info Papandayan',
+    notes: 'Cabang Cisurupan',
+    is_active: false,
+  },
+  {
+    id: 'qris-1',
+    name: 'QRIS Resmi Info Papandayan',
+    category: 'qris',
+    account_no: 'NMID: ID1020030040500',
+    account_name: 'Info Papandayan',
+    notes: 'Dapat di-scan melalui BCA Mobile, Livin, GoPay, OVO, Dana, ShopeePay',
+    is_active: false,
+  },
+  {
+    id: 'cash-1',
+    name: 'Pembayaran Tunai / Cash',
+    category: 'cash',
+    account_no: 'Kasir Kantor',
+    account_name: 'Info Papandayan',
+    notes: 'Pembayaran langsung di kantor operasional Cisurupan Garut',
+    is_active: false,
+  },
+];
+
 function getWasmBinary(): Buffer | undefined {
   const attempts = [
     () => {
@@ -297,6 +373,8 @@ function initSchemaAndSeed(db: Database) {
       app_name TEXT DEFAULT 'Info Papandayan - Invoice & Logistik',
       header_image_url TEXT DEFAULT '/invoice-header.svg',
       footer_image_url TEXT DEFAULT '/invoice-footer.svg',
+      whatsapp_template TEXT,
+      payment_methods TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
@@ -306,6 +384,12 @@ function initSchemaAndSeed(db: Database) {
   } catch (e) {}
   try {
     db.run(`ALTER TABLE invoice_settings ADD COLUMN footer_image_url TEXT DEFAULT '/invoice-footer.svg';`);
+  } catch (e) {}
+  try {
+    db.run(`ALTER TABLE invoice_settings ADD COLUMN whatsapp_template TEXT;`);
+  } catch (e) {}
+  try {
+    db.run(`ALTER TABLE invoice_settings ADD COLUMN payment_methods TEXT;`);
   } catch (e) {}
 
   // 10. Activity logs table
@@ -391,7 +475,8 @@ function initSchemaAndSeed(db: Database) {
         id, prefix, number_format, start_number, date_format, currency,
         default_tax_percent, default_discount, default_notes,
         signature_text, signer_name, signer_title, footer_text,
-        primary_color, secondary_color, app_name
+        primary_color, secondary_color, app_name,
+        whatsapp_template, payment_methods
       ) VALUES (
         1,
         'INV',
@@ -408,9 +493,11 @@ function initSchemaAndSeed(db: Database) {
         'Invoice ini diterbitkan secara sah melalui Sistem Invoice & Manajemen Barang Info Papandayan.',
         '#136239',
         '#7ba892',
-        'Sistem Invoice & Logistik - Info Papandayan'
+        'Sistem Invoice & Logistik - Info Papandayan',
+        ?,
+        ?
       );
-    `);
+    `, [DEFAULT_WHATSAPP_TEMPLATE, JSON.stringify(DEFAULT_PAYMENT_METHODS)]);
   } else {
     db.run(`
       UPDATE invoice_settings
@@ -421,6 +508,21 @@ function initSchemaAndSeed(db: Database) {
           app_name = 'Sistem Invoice & Logistik - Info Papandayan'
       WHERE id = 1;
     `);
+
+    // Ensure whatsapp_template and payment_methods are initialized if empty
+    try {
+      const existingSettings = db.exec('SELECT whatsapp_template, payment_methods FROM invoice_settings WHERE id = 1;');
+      const currentWa = existingSettings[0]?.values[0]?.[0];
+      const currentPay = existingSettings[0]?.values[0]?.[1];
+      if (!currentWa) {
+        db.run('UPDATE invoice_settings SET whatsapp_template = ? WHERE id = 1;', [DEFAULT_WHATSAPP_TEMPLATE]);
+      }
+      if (!currentPay) {
+        db.run('UPDATE invoice_settings SET payment_methods = ? WHERE id = 1;', [JSON.stringify(DEFAULT_PAYMENT_METHODS)]);
+      }
+    } catch (e) {
+      // ignore
+    }
   }
 
   // Seed categories if empty

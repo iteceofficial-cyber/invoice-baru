@@ -2,7 +2,94 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { formatRupiah, terbilang, formatDateIndo } from './utils.ts';
 
+export interface PaymentMethodItem {
+  id: string;
+  name: string;
+  category: 'bank' | 'qris' | 'cash' | 'other' | string;
+  account_no: string;
+  account_name: string;
+  notes?: string;
+  is_active: boolean;
+}
+
+export const DEFAULT_WHATSAPP_TEMPLATE = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
+
+Yth. Bapak/Ibu *{nama_pelanggan}*,
+Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ringkasan faktur tagihan Anda:
+
+📄 *No. Invoice:* {nomor_invoice}
+📅 *Tanggal Kegiatan:* {tanggal}
+🏷️ *Total Tagihan:* *{total}*
+💳 *Status:* *{status}*
+
+📋 *Rincian Layanan/Barang:*
+{rincian_barang}
+
+🏦 *Metode Pembayaran Resmi:*
+{metode_pembayaran}
+
+📥 *Link Unduh / Cetak Invoice:*
+{link_download}
+
+{catatan}
+
+Faktur invoice resmi dalam format PDF siap diunduh melalui tautan di atas. Silakan hubungi kami apabila memerlukan penyesuaian.
+
+Salam hangat,
+*{nama_perusahaan}*
+WhatsApp: {telepon_perusahaan}
+Website: {website_perusahaan}`;
+
+export const DEFAULT_PAYMENT_METHODS: PaymentMethodItem[] = [
+  {
+    id: 'mandiri-1',
+    name: 'Bank Mandiri',
+    category: 'bank',
+    account_no: '131-00-1849201-8',
+    account_name: 'Info Papandayan',
+    notes: 'KCP Garut',
+    is_active: true,
+  },
+  {
+    id: 'bca-1',
+    name: 'Bank BCA',
+    category: 'bank',
+    account_no: '148-098-7654',
+    account_name: 'Info Papandayan',
+    notes: 'KCU Garut',
+    is_active: true,
+  },
+  {
+    id: 'bri-1',
+    name: 'Bank BRI',
+    category: 'bank',
+    account_no: '0102-01-098765-50-1',
+    account_name: 'Info Papandayan',
+    notes: 'Cabang Cisurupan',
+    is_active: false,
+  },
+  {
+    id: 'qris-1',
+    name: 'QRIS Resmi Info Papandayan',
+    category: 'qris',
+    account_no: 'NMID: ID1020030040500',
+    account_name: 'Info Papandayan',
+    notes: 'Dapat di-scan melalui BCA Mobile, Livin, GoPay, OVO, Dana, ShopeePay',
+    is_active: false,
+  },
+  {
+    id: 'cash-1',
+    name: 'Pembayaran Tunai / Cash',
+    category: 'cash',
+    account_no: 'Kasir Kantor',
+    account_name: 'Info Papandayan',
+    notes: 'Pembayaran langsung di kantor operasional Cisurupan Garut',
+    is_active: false,
+  },
+];
+
 export interface InvoicePDFData {
+  id?: number;
   invoice_number: string;
   customer_name: string;
   customer_address?: string;
@@ -42,7 +129,10 @@ export interface InvoicePDFData {
     primary_color?: string;
     header_image_url?: string;
     footer_image_url?: string;
+    whatsapp_template?: string;
+    payment_methods?: PaymentMethodItem[] | string;
   };
+  payment_methods?: PaymentMethodItem[];
 }
 
 export function getSafeInvoiceFilename(data: InvoicePDFData): string {
@@ -168,20 +258,11 @@ export async function generateInvoicePDF(data: InvoicePDFData, action: 'download
   doc.text('DITAGIHKAN KEPADA (KLIEN):', margin + 3.5, infoY + 5);
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(10.5);
   doc.setTextColor(15, 23, 42);
   const safeCustName1 = String(data?.customer_name || 'Pelanggan / Klien');
   const custNameLines = doc.splitTextToSize(safeCustName1, 85);
-  doc.text(custNameLines, margin + 3.5, infoY + 10);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(71, 85, 105);
-  const custAddr = data?.customer_address ? String(data.customer_address) : '';
-  if (custAddr) {
-    const splitCustAddr = doc.splitTextToSize(custAddr, 85);
-    doc.text(splitCustAddr, margin + 3.5, infoY + 15);
-  }
+  doc.text(custNameLines, margin + 3.5, infoY + 12);
 
   // Right side: Informasi Transaksi
   const rightX = pageWidth - margin - 88;
@@ -291,14 +372,42 @@ export async function generateInvoicePDF(data: InvoicePDFData, action: 'download
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(71, 85, 105);
-  doc.text('PEMBAYARAN DITRANSFER KE:', margin + 3.5, finalY + 20);
+  doc.text('PEMBAYARAN RESMI DITRANSFER KE:', margin + 3.5, finalY + 18);
+
+  let activeMethods: PaymentMethodItem[] = [];
+  if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
+    activeMethods = data.payment_methods.filter((m) => m.is_active);
+  } else if (data.settings?.payment_methods) {
+    try {
+      const parsed = typeof data.settings.payment_methods === 'string'
+        ? JSON.parse(data.settings.payment_methods)
+        : data.settings.payment_methods;
+      activeMethods = (parsed || []).filter((m: any) => m.is_active);
+    } catch {}
+  }
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(`Bank       : ${data.bank_name || 'Bank Mandiri KCP Garut'}`, margin + 3.5, finalY + 24);
-  doc.text(`No. Rek : ${data.bank_account_no || '131-00-1849201-8'}`, margin + 3.5, finalY + 28);
-  doc.text(`A.n.        : ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`, margin + 3.5, finalY + 32);
+
+  if (activeMethods.length > 0) {
+    let mY = finalY + 22.5;
+    for (let i = 0; i < Math.min(activeMethods.length, 3); i++) {
+      const m = activeMethods[i];
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${m.name}:`, margin + 3.5, mY);
+      doc.setFont('helvetica', 'normal');
+      const valStr = m.category === 'cash' ? (m.notes || 'Kasir Kantor') : `${m.account_no} (a.n. ${m.account_name})`;
+      const labelW = doc.getTextWidth(`${m.name}: `);
+      const splitVal = doc.splitTextToSize(valStr, 92 - labelW - 6);
+      doc.text(splitVal[0] || valStr, margin + 3.5 + labelW, mY);
+      mY += 4.5;
+    }
+  } else {
+    doc.text(`Bank       : ${data.bank_name || 'Bank Mandiri KCP Garut'}`, margin + 3.5, finalY + 23);
+    doc.text(`No. Rek : ${data.bank_account_no || '131-00-1849201-8'}`, margin + 3.5, finalY + 27.5);
+    doc.text(`A.n.        : ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`, margin + 3.5, finalY + 32);
+  }
 
   // Right Side: Subtotal, Diskon, Pajak, Grand Total
   const sumX = pageWidth - margin - 65;
@@ -417,20 +526,11 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
   doc.text('DITAGIHKAN KEPADA (KLIEN):', margin + 3.5, infoY + 5);
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(10.5);
   doc.setTextColor(15, 23, 42);
   const safeCustName2 = String(data?.customer_name || 'Pelanggan / Klien');
   const custNameLines2 = doc.splitTextToSize(safeCustName2, 85);
-  doc.text(custNameLines2, margin + 3.5, infoY + 10);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(71, 85, 105);
-  const custAddr2 = data?.customer_address ? String(data.customer_address) : '';
-  if (custAddr2) {
-    const splitCustAddr2 = doc.splitTextToSize(custAddr2, 85);
-    doc.text(splitCustAddr2, margin + 3.5, infoY + 15);
-  }
+  doc.text(custNameLines2, margin + 3.5, infoY + 12);
 
   const rightX = pageWidth - margin - 88;
   doc.setFillColor(248, 250, 252);
@@ -542,15 +642,43 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
-  doc.setTextColor(19, 98, 57);
-  doc.text('PEMBAYARAN DITRANSFER KE:', margin + 3.5, finalY + 19);
+  doc.setTextColor(71, 85, 105);
+  doc.text('PEMBAYARAN RESMI DITRANSFER KE:', margin + 3.5, finalY + 18);
+
+  let activeMethodsBlob: PaymentMethodItem[] = [];
+  if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
+    activeMethodsBlob = data.payment_methods.filter((m) => m.is_active);
+  } else if (data.settings?.payment_methods) {
+    try {
+      const parsed = typeof data.settings.payment_methods === 'string'
+        ? JSON.parse(data.settings.payment_methods)
+        : data.settings.payment_methods;
+      activeMethodsBlob = (parsed || []).filter((m: any) => m.is_active);
+    } catch {}
+  }
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(`Bank       : ${data.bank_name || 'Bank Mandiri KCP Garut'}`, margin + 3.5, finalY + 23);
-  doc.text(`No. Rek : ${data.bank_account_no || '131-00-1849201-8'}`, margin + 3.5, finalY + 27);
-  doc.text(`A.n.        : ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`, margin + 3.5, finalY + 31);
+
+  if (activeMethodsBlob.length > 0) {
+    let mY = finalY + 22.5;
+    for (let i = 0; i < Math.min(activeMethodsBlob.length, 3); i++) {
+      const m = activeMethodsBlob[i];
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${m.name}:`, margin + 3.5, mY);
+      doc.setFont('helvetica', 'normal');
+      const valStr = m.category === 'cash' ? (m.notes || 'Kasir Kantor') : `${m.account_no} (a.n. ${m.account_name})`;
+      const labelW = doc.getTextWidth(`${m.name}: `);
+      const splitVal = doc.splitTextToSize(valStr, 92 - labelW - 6);
+      doc.text(splitVal[0] || valStr, margin + 3.5 + labelW, mY);
+      mY += 4.5;
+    }
+  } else {
+    doc.text(`Bank       : ${data.bank_name || 'Bank Mandiri KCP Garut'}`, margin + 3.5, finalY + 23);
+    doc.text(`No. Rek : ${data.bank_account_no || '131-00-1849201-8'}`, margin + 3.5, finalY + 27.5);
+    doc.text(`A.n.        : ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`, margin + 3.5, finalY + 32);
+  }
 
   const sumX = pageWidth - margin - 65;
   let currSumY = finalY + 3;
@@ -608,43 +736,124 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
   return { blob, filename };
 }
 
-// Generate prefilled Indonesian WhatsApp message for invoice
-export function buildWhatsAppInvoiceMessage(data: InvoicePDFData): string {
+// Generate prefilled Indonesian WhatsApp message for invoice with customizable template & download link
+export function buildWhatsAppInvoiceMessage(
+  data: InvoicePDFData,
+  templateOverride?: string,
+  downloadUrlOverride?: string
+): string {
   const statusStr =
-    data.status === 'paid' ? 'LUNAS (PAID)' : data.status === 'pending' ? 'MENUNGGU PEMBAYARAN' : data.status.toUpperCase();
+    data.status === 'paid'
+      ? 'LUNAS (PAID)'
+      : data.status === 'pending'
+      ? 'MENUNGGU PEMBAYARAN'
+      : data.status === 'cancelled'
+      ? 'DIBATALKAN'
+      : data.status.toUpperCase();
 
   const itemsList = data.items
-    .map((it, idx) => `  ${idx + 1}. ${it.product_name} (${it.qty} ${it.unit}) = ${formatRupiah(it.subtotal)}`)
+    .map(
+      (it, idx) =>
+        `  ${idx + 1}. ${it.product_name} (${it.qty} ${it.unit}) = ${formatRupiah(it.subtotal)}`
+    )
     .join('\n');
 
-  return `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
+  // Format payment methods
+  let methodsList: PaymentMethodItem[] = [];
+  if (Array.isArray(data.payment_methods) && data.payment_methods.length > 0) {
+    methodsList = data.payment_methods;
+  } else if (data.settings?.payment_methods) {
+    try {
+      methodsList =
+        typeof data.settings.payment_methods === 'string'
+          ? JSON.parse(data.settings.payment_methods)
+          : data.settings.payment_methods;
+    } catch {
+      methodsList = [];
+    }
+  }
 
-Yth. Bapak/Ibu *${data.customer_name}*,
+  const activeMethods = methodsList.filter((m) => m.is_active);
+  let paymentText = '';
+  if (activeMethods.length > 0) {
+    paymentText = activeMethods
+      .map((m) => {
+        if (m.category === 'cash') {
+          return `• *${m.name}*: ${m.notes || 'Pembayaran langsung di kasir kantor'}`;
+        }
+        if (m.category === 'qris') {
+          return `• *${m.name}* (${m.account_name}): ${m.account_no}${m.notes ? ` - ${m.notes}` : ''}`;
+        }
+        return `• *${m.name}*: ${m.account_no} (a.n. ${m.account_name})${m.notes ? ` - ${m.notes}` : ''}`;
+      })
+      .join('\n');
+  } else {
+    paymentText = `Bank: ${data.bank_name || 'Bank Mandiri KCP Garut'}\nNo. Rekening: ${data.bank_account_no || '131-00-1849201-8'}\nAtas Nama: ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}`;
+  }
+
+  // Generate public download link
+  const cleanInvNumber = encodeURIComponent(data.invoice_number);
+  const downloadLink =
+    downloadUrlOverride ||
+    (typeof window !== 'undefined'
+      ? `${window.location.origin}/?inv=${cleanInvNumber}`
+      : `/?inv=${cleanInvNumber}`);
+
+  const defaultTemplate = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
+
+Yth. Bapak/Ibu *{nama_pelanggan}*,
 Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ringkasan faktur tagihan Anda:
 
-📄 *No. Invoice:* ${data.invoice_number}
-📅 *Tanggal Kegiatan:* ${formatDateIndo(data.activity_date)}
-🏷️ *Total Tagihan:* *${formatRupiah(data.total_amount)}*
-💳 *Status:* *${statusStr}*
+📄 *No. Invoice:* {nomor_invoice}
+📅 *Tanggal Kegiatan:* {tanggal}
+🏷️ *Total Tagihan:* *{total}*
+💳 *Status:* *{status}*
 
 📋 *Rincian Layanan/Barang:*
-${itemsList}
+{rincian_barang}
 
-🏦 *Rekening Resmi:*
-Bank: ${data.bank_name || 'Bank Mandiri KCP Garut'}
-No. Rekening: ${data.bank_account_no || '131-00-1849201-8'}
-Atas Nama: ${data.bank_account_name || 'Info Papandayan / Mohamad Rizal'}
-${data.notes ? `\n📝 *Catatan:* ${data.notes}\n` : ''}
-Faktur invoice resmi dalam format PDF siap dikirimkan. Silakan hubungi kami apabila memerlukan penyesuaian.
+🏦 *Metode Pembayaran Resmi:*
+{metode_pembayaran}
+
+📥 *Link Unduh / Cetak Invoice:*
+{link_download}
+
+{catatan}
+
+Faktur invoice resmi dalam format PDF siap diunduh melalui tautan di atas. Silakan hubungi kami apabila memerlukan penyesuaian.
 
 Salam hangat,
-*Info Papandayan Garut*
-WhatsApp: +62 822-4063-0123 / +62 813-2127-3552
-Website: https://infopapandayan.com`;
+*{nama_perusahaan}*
+WhatsApp: {telepon_perusahaan}
+Website: {website_perusahaan}`;
+
+  const template = templateOverride || data.settings?.whatsapp_template || defaultTemplate;
+  const notesText = data.notes ? `📝 *Catatan:* ${data.notes}` : '';
+
+  const result = template
+    .replace(/\{nomor_invoice\}/g, data.invoice_number || '')
+    .replace(/\{nama_pelanggan\}/g, data.customer_name || 'Pelanggan')
+    .replace(/\{tanggal\}/g, formatDateIndo(data.activity_date))
+    .replace(/\{jatuh_tempo\}/g, data.due_date ? formatDateIndo(data.due_date) : '-')
+    .replace(/\{total\}/g, formatRupiah(data.total_amount))
+    .replace(/\{status\}/g, statusStr)
+    .replace(/\{rincian_barang\}/g, itemsList)
+    .replace(/\{metode_pembayaran\}/g, paymentText)
+    .replace(/\{link_download\}/g, downloadLink)
+    .replace(/\{catatan\}/g, notesText)
+    .replace(/\{nama_perusahaan\}/g, data.company?.company_name || 'Info Papandayan')
+    .replace(/\{telepon_perusahaan\}/g, data.company?.phone || '+62 822-4063-0123 / +62 813-2127-3552')
+    .replace(/\{website_perusahaan\}/g, data.company?.website || 'https://infopapandayan.com');
+
+  return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // Direct action to open WhatsApp to send invoice to customer
-export function openWhatsAppInvoice(data: InvoicePDFData, phoneOverride?: string) {
+export function openWhatsAppInvoice(
+  data: InvoicePDFData,
+  phoneOverride?: string,
+  customMessageText?: string
+) {
   let phone = phoneOverride || data.customer_phone || '';
   phone = phone.replace(/[^0-9]/g, '');
   if (phone.startsWith('0')) {
@@ -653,7 +862,8 @@ export function openWhatsAppInvoice(data: InvoicePDFData, phoneOverride?: string
     phone = '62' + phone;
   }
 
-  const message = encodeURIComponent(buildWhatsAppInvoiceMessage(data));
+  const messageText = customMessageText || buildWhatsAppInvoiceMessage(data);
+  const message = encodeURIComponent(messageText);
   const waUrl = phone ? `https://wa.me/${phone}?text=${message}` : `https://wa.me/?text=${message}`;
 
   const link = document.createElement('a');

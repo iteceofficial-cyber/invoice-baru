@@ -507,8 +507,8 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
               </div>
             </div>
 
-            {/* Customer Picker */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+            {/* Customer Picker & Status */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Pilih Data Pelanggan Terdaftar
@@ -539,32 +539,17 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
                   className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
                   required
                 />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Alamat Lengkap Klien
-                </label>
-                <textarea
-                  rows={2}
-                  value={customerAddress}
-                  onChange={(e) => setCustomerAddress(e.target.value)}
-                  placeholder="Gedung, jalan, nomor, kota, kode pos"
-                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                />
                 {!selectedCustomerId && customerName.trim() && (
-                  <div className="flex items-center gap-2 pt-1.5">
+                  <div className="flex items-center gap-1.5 pt-1.5">
                     <input
                       type="checkbox"
                       id="saveNewCustomerCheckbox"
                       checked={saveNewCustomerToDb}
                       onChange={(e) => setSaveNewCustomerToDb(e.target.checked)}
-                      className="w-4 h-4 rounded accent-[#136239] border-slate-300 cursor-pointer"
+                      className="w-3.5 h-3.5 rounded accent-[#136239] border-slate-300 cursor-pointer"
                     />
                     <label htmlFor="saveNewCustomerCheckbox" className="text-[11px] text-slate-600 font-medium cursor-pointer">
-                      Simpan pelanggan ini ke database pelanggan
+                      Simpan ke database pelanggan
                     </label>
                   </div>
                 )}
