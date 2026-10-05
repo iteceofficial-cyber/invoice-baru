@@ -30,6 +30,7 @@ interface InvoiceItemForm {
   price: number;
   subtotal: number;
   stock?: number;
+  save_to_db?: boolean;
 }
 
 interface CustomerOption {
@@ -97,10 +98,33 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
 
   const toast = useToast();
 
+  const [loadingProducts, setLoadingProducts] = useState(false);
+
   // Load initial settings and options
   useEffect(() => {
     loadPrerequisites();
   }, [editInvoiceId]);
+
+  const reloadProducts = async () => {
+    setLoadingProducts(true);
+    try {
+      const prodRes = await apiRequest('/api/products/all');
+      if (prodRes.success && Array.isArray(prodRes.data)) {
+        setProducts(prodRes.data);
+        toast.success(`Berhasil memuat seluruh ${prodRes.data.length} produk dari database`);
+      } else {
+        const fallback = await apiRequest('/api/products?all=true');
+        if (fallback.success && Array.isArray(fallback.data)) {
+          setProducts(fallback.data);
+          toast.success(`Berhasil memuat ${fallback.data.length} produk dari database`);
+        }
+      }
+    } catch {
+      toast.error('Gagal memuat ulang data produk');
+    } finally {
+      setLoadingProducts(false);
+    }
+  };
 
   const loadPrerequisites = async () => {
     // 1. Customers
@@ -109,10 +133,19 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       setCustomers(custRes.data);
     }
 
-    // 2. Products
-    const prodRes = await apiRequest('/api/products?limit=100&status=active');
-    if (prodRes.success && prodRes.data) {
-      setProducts(prodRes.data);
+    // 2. Products - load ALL products from database (not restricted by limit or status)
+    try {
+      const prodRes = await apiRequest('/api/products/all');
+      if (prodRes.success && Array.isArray(prodRes.data)) {
+        setProducts(prodRes.data);
+      } else {
+        const fallback = await apiRequest('/api/products?all=true');
+        if (fallback.success && Array.isArray(fallback.data)) {
+          setProducts(fallback.data);
+        }
+      }
+    } catch {
+      // ignore
     }
 
     // 3. Settings
@@ -153,10 +186,10 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
           inv.items.map((it: any) => ({
             id: it.id,
             product_id: it.product_id,
-            product_code: it.product_code,
+            product_code: it.product_code || (it.product_id ? 'PRD' : 'MANUAL'),
             product_name: it.product_name,
             qty: it.qty,
-            unit: it.unit,
+            unit: it.unit || 'Pcs',
             price: it.price,
             subtotal: it.subtotal,
             stock: it.current_product_stock,
@@ -176,7 +209,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     setItems([
       {
         product_id: null,
-        product_code: '',
+        product_code: 'MANUAL',
         product_name: '',
         qty: 1,
         unit: 'Pcs',
@@ -204,18 +237,15 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
     }
   };
 
-  // Product selection in item row
+  // Product selection from dropdown
   const handleProductSelect = (index: number, prodIdStr: string) => {
     const updated = [...items];
-    if (!prodIdStr) {
+    if (!prodIdStr || prodIdStr === 'manual') {
       updated[index] = {
         ...updated[index],
         product_id: null,
-        product_code: '',
-        product_name: '',
-        unit: 'Pcs',
-        price: 0,
-        subtotal: 0,
+        product_code: updated[index].product_code || 'MANUAL',
+        stock: undefined,
       };
       setItems(updated);
       return;
@@ -229,13 +259,56 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
         product_id: p.id,
         product_code: p.code,
         product_name: p.name,
-        unit: p.unit,
+        unit: p.unit || 'Pcs',
         price: p.price,
         stock: p.stock,
         subtotal: sub,
+        save_to_db: false,
       };
       setItems(updated);
     }
+  };
+
+  // Product name change (supports manual typing and datalist selection)
+  const handleProductNameChange = (index: number, val: string) => {
+    const updated = [...items];
+    const trimmed = val.trim().toLowerCase();
+
+    // Check if what the user entered matches any product in DB exactly
+    const matched = products.find(
+      (p) => p.name.toLowerCase() === trimmed || `${p.code} - ${p.name}`.toLowerCase() === trimmed
+    );
+
+    if (matched) {
+      const sub = updated[index].qty * matched.price;
+      updated[index] = {
+        ...updated[index],
+        product_id: matched.id,
+        product_code: matched.code,
+        product_name: matched.name,
+        unit: matched.unit || 'Pcs',
+        price: matched.price,
+        stock: matched.stock,
+        subtotal: sub,
+        save_to_db: false,
+      };
+    } else {
+      // Manual typing
+      updated[index] = {
+        ...updated[index],
+        product_name: val,
+        product_id: null,
+        product_code:
+          updated[index].product_code &&
+          updated[index].product_code !== 'MANUAL' &&
+          updated[index].product_code.startsWith('PRD-')
+            ? 'MANUAL'
+            : (updated[index].product_code || 'MANUAL'),
+        stock: undefined,
+      };
+    }
+
+    setItems(updated);
   };
 
   const handleUpdateItem = (index: number, field: keyof InvoiceItemForm, value: any) => {
@@ -364,12 +437,13 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
       tax_percent: 0,
       status,
       items: items.map((it) => ({
-        product_id: it.product_id,
-        product_code: it.product_code || '',
-        product_name: it.product_name,
+        product_id: it.product_id || null,
+        product_code: it.product_code?.trim() || (it.product_id ? 'PRD' : 'MANUAL'),
+        product_name: it.product_name.trim(),
         qty: it.qty,
         unit: it.unit || 'Pcs',
         price: it.price,
+        save_to_db: !it.product_id && !!it.save_to_db,
       })),
     };
 
@@ -619,80 +693,169 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
 
           {/* Card 2: Items Table */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
-                <Calculator className="w-4 h-4 text-blue-600" />
-                2. Daftar Barang / Produk Transaksi ({items.length} item)
-              </h3>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+                  <Calculator className="w-4 h-4 text-blue-600" />
+                  2. Daftar Barang / Produk Transaksi ({items.length} item)
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Pilih produk dari database stok atau ketik langsung nama barang & jasa secara manual
+                </p>
+              </div>
 
-              <button
-                type="button"
-                onClick={handleAddItem}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-bold transition cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Tambah Baris</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={reloadProducts}
+                  disabled={loadingProducts}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-semibold transition cursor-pointer"
+                  title="Muat ulang seluruh data produk dari database"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${loadingProducts ? 'animate-spin' : ''}`} />
+                  <span>{loadingProducts ? 'Memuat...' : `Katalog (${products.length})`}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleAddItem}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-xs font-bold transition shadow-xs cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Tambah Baris</span>
+                </button>
+              </div>
             </div>
+
+            {/* Datalist for fast native autocomplete search */}
+            <datalist id="products-catalog-list">
+              {products.map((p) => (
+                <option key={p.id} value={p.name}>
+                  [{p.code}] {p.name} - Stok: {p.stock} {p.unit} - {formatRupiah(p.price)}
+                </option>
+              ))}
+            </datalist>
 
             <div className="space-y-3">
               {items.map((it, idx) => (
                 <div
                   key={idx}
-                  className="p-3.5 rounded-xl bg-slate-50/80 border border-slate-200/80 space-y-2 hover:border-blue-200 transition"
+                  className="p-4 rounded-xl bg-slate-50/90 border border-slate-200/90 space-y-3 hover:border-blue-300 transition"
                 >
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-500 pb-1">
-                    <span>Barang #{idx + 1}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveItem(idx)}
-                      className="text-slate-400 hover:text-rose-600 p-1 rounded-md transition"
-                      title="Hapus baris ini"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                  {/* Top Bar: Item Number, Status Badges, and Action Buttons */}
+                  <div className="flex items-center justify-between pb-1 border-b border-slate-200/60 flex-wrap gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold text-slate-700">Barang #{idx + 1}</span>
+
+                      {/* Status indicator: Database vs Manual */}
+                      {it.product_id ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold border border-emerald-200">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span>Dari Stok Database (Tersedia: {it.stock ?? 0} {it.unit || 'Pcs'})</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[11px] font-semibold border border-amber-200">
+                          <span>✏️ Ketik Manual (Bebas / Non-Stok)</span>
+                        </span>
+                      )}
+
+                      {it.product_code && (
+                        <span className="text-[11px] font-mono text-slate-500 bg-white px-1.5 py-0.5 rounded border border-slate-200">
+                          Kode: {it.product_code}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {it.product_id ? (
+                        <button
+                          type="button"
+                          onClick={() => handleProductSelect(idx, 'manual')}
+                          className="text-[11px] text-slate-600 hover:text-blue-600 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 transition cursor-pointer font-medium"
+                          title="Lepas keterikatan dengan database produk stok"
+                        >
+                          Ganti ke Manual
+                        </button>
+                      ) : null}
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveItem(idx)}
+                        className="text-slate-400 hover:text-rose-600 p-1 rounded-md transition cursor-pointer"
+                        title="Hapus baris ini"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                    {/* Database product selector */}
-                    <div className="sm:col-span-4">
-                      <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
-                        Pilih Produk Dari Stok
+                  {/* Product Selection & Manual Typing Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-start">
+                    {/* Database product selector dropdown */}
+                    <div className="sm:col-span-5">
+                      <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
+                        Pilih Dari Katalog ({products.length} Tersedia)
                       </label>
                       <select
                         value={it.product_id ? it.product_id.toString() : ''}
                         onChange={(e) => handleProductSelect(idx, e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-blue-500"
+                        className="w-full px-2.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
                       >
-                        <option value="">-- Pilih dari database --</option>
+                        <option value="">-- ✏️ Ketik Manual Bebas --</option>
                         {products.map((p) => (
                           <option key={p.id} value={p.id}>
-                            {p.name} (Stok: {p.stock})
+                            {p.code} - {p.name} (Stok: {p.stock} | {formatRupiah(p.price)})
                           </option>
                         ))}
                       </select>
                     </div>
 
-                    {/* Product Name (editable) */}
-                    <div className="sm:col-span-8">
-                      <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
-                        Deskripsi / Nama Barang *
+                    {/* Product Name (Freely editable / typed manual or filled from DB) */}
+                    <div className="sm:col-span-7">
+                      <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1 flex items-center justify-between">
+                        <span>Nama / Deskripsi Barang (Bisa Diketik Manual) *</span>
+                        {products.length > 0 && (
+                          <span className="text-[10px] text-blue-600 lowercase font-normal">
+                            bisa ketik bebas / saran otomatis
+                          </span>
+                        )}
                       </label>
                       <input
                         type="text"
+                        list="products-catalog-list"
                         value={it.product_name}
-                        onChange={(e) => handleUpdateItem(idx, 'product_name', e.target.value)}
-                        placeholder="Nama spesifikasi barang"
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-blue-500"
+                        onChange={(e) => handleProductNameChange(idx, e.target.value)}
+                        placeholder="Ketik manual nama produk, jasa, layanan, atau pilih dari katalog..."
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 placeholder:font-normal focus:ring-2 focus:ring-blue-500 focus:outline-none"
                         required
                       />
+
+                      {/* Manual Product Checkbox: Option to auto-save into database */}
+                      {!it.product_id && it.product_name.trim() && (
+                        <div className="flex items-center gap-1.5 pt-1.5">
+                          <input
+                            type="checkbox"
+                            id={`save_prod_db_${idx}`}
+                            checked={!!it.save_to_db}
+                            onChange={(e) => handleUpdateItem(idx, 'save_to_db', e.target.checked)}
+                            className="w-3.5 h-3.5 rounded accent-[#136239] border-slate-300 cursor-pointer"
+                          />
+                          <label
+                            htmlFor={`save_prod_db_${idx}`}
+                            className="text-[11px] text-slate-600 font-medium cursor-pointer"
+                          >
+                            Simpan barang ini ke database produk
+                          </label>
+                        </div>
+                      )}
                     </div>
                   </div>
 
+                  {/* Quantity, Unit, Price, and Subtotal */}
                   <div className="grid grid-cols-2 sm:grid-cols-12 gap-3 items-end pt-1">
                     {/* Qty */}
                     <div className="sm:col-span-3">
-                      <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
                         Qty *
                       </label>
                       <input
@@ -700,28 +863,28 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
                         min="1"
                         value={it.qty}
                         onChange={(e) => handleUpdateItem(idx, 'qty', e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold text-center focus:ring-2 focus:ring-blue-500"
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold text-center focus:ring-2 focus:ring-blue-500 focus:outline-none"
                         required
                       />
                     </div>
 
                     {/* Unit */}
                     <div className="sm:col-span-3">
-                      <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
                         Satuan
                       </label>
                       <input
                         type="text"
                         value={it.unit}
                         onChange={(e) => handleUpdateItem(idx, 'unit', e.target.value)}
-                        placeholder="Pcs"
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs text-center focus:ring-2 focus:ring-blue-500"
+                        placeholder="Pcs, Unit, Hari..."
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs text-center focus:ring-2 focus:ring-blue-500 focus:outline-none"
                       />
                     </div>
 
                     {/* Price */}
                     <div className="sm:col-span-3">
-                      <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
                         Harga Satuan (Rp) *
                       </label>
                       <input
@@ -729,7 +892,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
                         min="0"
                         value={it.price}
                         onChange={(e) => handleUpdateItem(idx, 'price', e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-right focus:ring-2 focus:ring-blue-500"
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-right focus:ring-2 focus:ring-blue-500 focus:outline-none"
                         required
                       />
                     </div>
@@ -754,7 +917,7 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
               className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50/40 text-blue-600 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>Tambah Baris Barang Lagi</span>
+              <span>Tambah Baris Barang Lainnya</span>
             </button>
           </div>
         </div>

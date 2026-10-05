@@ -180,6 +180,9 @@ export async function getDb(): Promise<Database> {
 export function saveDb() {
   if (!dbInstance) return;
   try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
     fs.writeFileSync(DB_FILE, buffer);
@@ -471,20 +474,6 @@ function initSchemaAndSeed(db: Database) {
         'Info Papandayan'
       );
     `);
-  } else {
-    db.run(`
-      UPDATE company_settings
-      SET company_name = 'Info Papandayan',
-          logo_url = '/invoice-header.svg',
-          address = 'Jl. Kawah Papandayan, Karamat Wangi, Kec. Cisurupan, Kab. Garut',
-          phone = '+62 822-4063-0123 / +62 813-2127-3552',
-          email = 'info@infopapandayan.com',
-          website = 'https://infopapandayan.com',
-          bank_account_no = '131-00-1849201-8',
-          bank_name = 'Bank Mandiri KCP Garut',
-          bank_account_name = 'Info Papandayan'
-      WHERE id = 1;
-    `);
   }
 
   // Seed default invoice settings if empty
@@ -520,17 +509,7 @@ function initSchemaAndSeed(db: Database) {
       );
     `, [DEFAULT_WHATSAPP_TEMPLATE, JSON.stringify(DEFAULT_PAYMENT_METHODS)]);
   } else {
-    db.run(`
-      UPDATE invoice_settings
-      SET signer_name = 'Mohamad Rizal',
-          signer_title = 'Direktur Operasional Info Papandayan',
-          primary_color = '#136239',
-          secondary_color = '#7ba892',
-          app_name = 'Sistem Invoice & Logistik - Info Papandayan'
-      WHERE id = 1;
-    `);
-
-    // Ensure whatsapp_template and payment_methods are initialized if empty
+    // Ensure whatsapp_template and payment_methods have fallback if empty, without overwriting custom settings
     try {
       const existingSettings = db.exec('SELECT whatsapp_template, payment_methods FROM invoice_settings WHERE id = 1;');
       const currentWa = existingSettings[0]?.values[0]?.[0];

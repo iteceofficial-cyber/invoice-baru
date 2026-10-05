@@ -1,4 +1,5 @@
-import express, { Request, Response } from 'express';
+import express from 'express';
+import type { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import * as XLSX from 'xlsx';
 import multer from 'multer';
@@ -359,7 +360,7 @@ apiRouter.get('/products/all', requireAuth, (_req: AuthenticatedRequest, res: Re
       SELECT p.*, c.name as category_name
       FROM products p
       LEFT JOIN categories c ON p.category_id = c.id
-      ORDER BY p.id DESC
+      ORDER BY p.name ASC, p.id DESC
     `);
     return res.json({ success: true, data: products, total: products.length });
   } catch (err: any) {
@@ -388,34 +389,64 @@ function sanitizeStock(val: any): number {
 // Create product
 apiRouter.post('/products', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { code, name, category_id, unit, price, stock, status = 'active', description } = req.body;
+    let { code, name, category_id, unit, price, stock, status = 'active', description } = req.body;
 
-    if (!code || !name) {
-      return res.status(400).json({ success: false, message: 'Kode produk dan nama produk wajib diisi' });
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: 'Nama produk wajib diisi' });
     }
 
     const numPrice = sanitizePrice(price);
     const numStock = sanitizeStock(stock);
 
-    // Check duplicate code
-    const existing = queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?)', [code.trim()]);
-    if (existing) {
-      return res.status(400).json({ success: false, message: `Kode produk '${code.trim()}' sudah digunakan oleh produk lain` });
+    // Auto-generate unique code if blank
+    let finalCode = (code && typeof code === 'string') ? code.trim().toUpperCase() : '';
+    if (!finalCode) {
+      const maxIdRow = queryOne<{ maxId: number }>('SELECT MAX(id) as maxId FROM products');
+      const nextId = (maxIdRow?.maxId || 0) + 1;
+      finalCode = `PRD-${String(nextId).padStart(3, '0')}`;
     }
 
-    const catId = category_id ? parseInt(category_id, 10) || null : null;
+    // Check duplicate code
+    const existing = queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?)', [finalCode]);
+    if (existing) {
+      if (!code || !code.trim()) {
+        let counter = 1;
+        while (queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?)', [`${finalCode}-${counter}`])) {
+          counter++;
+        }
+        finalCode = `${finalCode}-${counter}`;
+      } else {
+        return res.status(400).json({ success: false, message: `Kode produk '${finalCode}' sudah digunakan oleh produk lain` });
+      }
+    }
+
+    // Validate category_id exists in categories to prevent SQLite foreign key error
+    let catId: number | null = null;
+    if (category_id) {
+      const parsedCatId = parseInt(category_id, 10);
+      if (!isNaN(parsedCatId) && parsedCatId > 0) {
+        const catRow = queryOne('SELECT id FROM categories WHERE id = ?', [parsedCatId]);
+        if (catRow) {
+          catId = catRow.id;
+        }
+      }
+    }
+
+    const finalStatus = (status && status.trim()) ? status.trim() : 'active';
 
     const result = runQuery(
       `INSERT INTO products (code, name, category_id, unit, price, stock, status, description, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
-      [code.trim().toUpperCase(), name.trim(), catId, unit?.trim() || 'Pcs', numPrice, numStock, status, description?.trim() || '']
+      [finalCode, name.trim(), catId, unit?.trim() || 'Pcs', numPrice, numStock, finalStatus, description?.trim() || '']
     );
+
+    saveDb();
 
     logActivity(
       req.user?.id || null,
       req.user?.username || 'admin',
       'Tambah Produk',
-      `Menambah produk baru ${code.trim().toUpperCase()} - ${name.trim()}`,
+      `Menambah produk baru ${finalCode} - ${name.trim()}`,
       req.ip
     );
 
@@ -423,6 +454,7 @@ apiRouter.post('/products', requireAuth, (req: AuthenticatedRequest, res: Respon
       success: true,
       message: 'Produk berhasil ditambahkan',
       productId: result.lastInsertRowId,
+      code: finalCode,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal menambahkan produk: ' + err.message });
@@ -433,40 +465,56 @@ apiRouter.post('/products', requireAuth, (req: AuthenticatedRequest, res: Respon
 apiRouter.put('/products/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { code, name, category_id, unit, price, stock, status, description } = req.body;
+    let { code, name, category_id, unit, price, stock, status, description } = req.body;
 
-    const existing = queryOne('SELECT * FROM products WHERE id = ?', [id]);
+    const existing = queryOne<any>('SELECT * FROM products WHERE id = ?', [id]);
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Produk tidak ditemukan' });
     }
 
-    if (!code || !name) {
-      return res.status(400).json({ success: false, message: 'Kode produk dan nama produk wajib diisi' });
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: 'Nama produk wajib diisi' });
     }
+
+    let finalCode = (code && typeof code === 'string') ? code.trim().toUpperCase() : existing.code;
 
     const numPrice = sanitizePrice(price);
     const numStock = sanitizeStock(stock);
 
     // Check duplicate code on other products
-    const duplicate = queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?) AND id != ?', [code.trim(), id]);
+    const duplicate = queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?) AND id != ?', [finalCode, id]);
     if (duplicate) {
-      return res.status(400).json({ success: false, message: `Kode produk '${code.trim()}' sudah digunakan oleh produk lain` });
+      return res.status(400).json({ success: false, message: `Kode produk '${finalCode}' sudah digunakan oleh produk lain` });
     }
 
-    const catId = category_id ? parseInt(category_id, 10) || null : null;
+    // Validate category_id exists in categories to prevent SQLite foreign key error
+    let catId: number | null = null;
+    if (category_id) {
+      const parsedCatId = parseInt(category_id, 10);
+      if (!isNaN(parsedCatId) && parsedCatId > 0) {
+        const catRow = queryOne('SELECT id FROM categories WHERE id = ?', [parsedCatId]);
+        if (catRow) {
+          catId = catRow.id;
+        }
+      }
+    }
+
+    const finalStatus = (status && status.trim()) ? status.trim() : existing.status;
 
     runQuery(
       `UPDATE products
        SET code = ?, name = ?, category_id = ?, unit = ?, price = ?, stock = ?, status = ?, description = ?, updated_at = datetime('now', 'localtime')
        WHERE id = ?`,
-      [code.trim().toUpperCase(), name.trim(), catId, unit?.trim() || 'Pcs', numPrice, numStock, status, description?.trim() || '', id]
+      [finalCode, name.trim(), catId, unit?.trim() || 'Pcs', numPrice, numStock, finalStatus, description?.trim() || '', id]
     );
+
+    saveDb();
 
     logActivity(
       req.user?.id || null,
       req.user?.username || 'admin',
       'Edit Produk',
-      `Mengubah data produk ID ${id} (${code.trim().toUpperCase()})`,
+      `Mengubah data produk ID ${id} (${finalCode})`,
       req.ip
     );
 
@@ -1858,9 +1906,45 @@ apiRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respon
       const itemSubtotal = qty * price;
       subtotal += itemSubtotal;
 
+      // Validate product_id against products table to avoid SQLite foreign key constraint failure
+      let validProductId: number | null = null;
+      if (it.product_id) {
+        const parsedPid = parseInt(it.product_id, 10);
+        if (!isNaN(parsedPid) && parsedPid > 0) {
+          const pCheck = queryOne('SELECT id FROM products WHERE id = ?', [parsedPid]);
+          if (pCheck) {
+            validProductId = pCheck.id;
+          }
+        }
+      }
+
+      // If manual product and user chose save_to_db, automatically insert into products
+      if (!validProductId && it.save_to_db && it.product_name.trim()) {
+        try {
+          const autoCode = (it.product_code && it.product_code !== 'MANUAL' && it.product_code !== 'CUSTOM')
+            ? it.product_code.trim().toUpperCase()
+            : `PRD-${Date.now().toString().slice(-4)}`;
+          let finalProdCode = autoCode;
+          let counter = 1;
+          while (queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?)', [finalProdCode])) {
+            finalProdCode = `${autoCode}-${counter++}`;
+          }
+          const newProd = runQuery(
+            `INSERT INTO products (code, name, unit, price, stock, status, description, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'active', 'Ditambahkan otomatis dari pembuatan invoice', datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+            [finalProdCode, it.product_name.trim(), it.unit?.trim() || 'Pcs', price, 0]
+          );
+          if (newProd.lastInsertRowId) {
+            validProductId = newProd.lastInsertRowId;
+          }
+        } catch (e) {
+          console.warn('Could not auto-save manual product to DB:', e);
+        }
+      }
+
       validatedItems.push({
-        product_id: it.product_id || null,
-        product_code: it.product_code?.trim() || 'CUSTOM',
+        product_id: validProductId,
+        product_code: it.product_code?.trim() || (validProductId ? 'PRD' : 'MANUAL'),
         product_name: it.product_name.trim(),
         qty,
         unit: it.unit?.trim() || 'Pcs',
@@ -2052,9 +2136,45 @@ apiRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
       const itemSubtotal = qty * (isNaN(price) ? 0 : price);
       subtotal += itemSubtotal;
 
+      // Validate product_id against products table to avoid SQLite foreign key constraint failure
+      let validProductId: number | null = null;
+      if (it.product_id) {
+        const parsedPid = parseInt(it.product_id, 10);
+        if (!isNaN(parsedPid) && parsedPid > 0) {
+          const pCheck = queryOne('SELECT id FROM products WHERE id = ?', [parsedPid]);
+          if (pCheck) {
+            validProductId = pCheck.id;
+          }
+        }
+      }
+
+      // If manual product and user chose save_to_db, automatically insert into products
+      if (!validProductId && it.save_to_db && it.product_name.trim()) {
+        try {
+          const autoCode = (it.product_code && it.product_code !== 'MANUAL' && it.product_code !== 'CUSTOM')
+            ? it.product_code.trim().toUpperCase()
+            : `PRD-${Date.now().toString().slice(-4)}`;
+          let finalProdCode = autoCode;
+          let counter = 1;
+          while (queryOne('SELECT id FROM products WHERE LOWER(code) = LOWER(?)', [finalProdCode])) {
+            finalProdCode = `${autoCode}-${counter++}`;
+          }
+          const newProd = runQuery(
+            `INSERT INTO products (code, name, unit, price, stock, status, description, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'active', 'Ditambahkan otomatis dari edit invoice', datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+            [finalProdCode, it.product_name.trim(), it.unit?.trim() || 'Pcs', isNaN(price) ? 0 : price, 0]
+          );
+          if (newProd.lastInsertRowId) {
+            validProductId = newProd.lastInsertRowId;
+          }
+        } catch (e) {
+          console.warn('Could not auto-save manual product to DB:', e);
+        }
+      }
+
       validatedItems.push({
-        product_id: it.product_id || null,
-        product_code: it.product_code?.trim() || 'CUSTOM',
+        product_id: validProductId,
+        product_code: it.product_code?.trim() || (validProductId ? 'PRD' : 'MANUAL'),
         product_name: it.product_name.trim(),
         qty,
         unit: it.unit?.trim() || 'Pcs',
