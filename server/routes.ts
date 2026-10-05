@@ -1670,6 +1670,30 @@ apiRouter.get('/invoices/public/download-pdf', (req: Request, res: Response) => 
   }
 });
 
+// Direct PDF download routes (without /invoices/public prefix)
+const handleDirectPdf = (req: Request, res: Response) => {
+  try {
+    const rawVal = (req.query.inv || req.query.invoice || req.query.number || req.query.identifier || req.params.identifier || req.query.no || req.query.faktur || '') as string;
+    const invoice = fetchPublicInvoiceData(rawVal, req.query.id);
+    if (!invoice) {
+      return res.status(404).send('Faktur invoice tidak ditemukan atau tautan telah kedaluwarsa.');
+    }
+    const pdfBuffer = generateServerInvoicePdf(invoice);
+    const safeNum = (invoice.invoice_number || 'INV').replace(/[\/\\]/g, '-');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Invoice-${safeNum}.pdf"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    return res.end(pdfBuffer);
+  } catch (err: any) {
+    return res.status(500).send('Gagal mengunduh file PDF: ' + err.message);
+  }
+};
+
+apiRouter.get('/download-pdf', handleDirectPdf);
+apiRouter.get('/unduh-pdf', handleDirectPdf);
+apiRouter.get('/faktur-pdf', handleDirectPdf);
+apiRouter.get('/pdf/:identifier', handleDirectPdf);
+
 // 2. Public invoice JSON endpoint via query parameters
 apiRouter.get('/invoices/public', (req: Request, res: Response) => {
   try {
@@ -2633,7 +2657,7 @@ apiRouter.post('/reports/items-out/delete-batch', requireAuth, (req: Authenticat
 apiRouter.get('/settings/public', (_req: Request, res: Response) => {
   try {
     const company = queryOne('SELECT company_name, logo_url, address, phone, email, website FROM company_settings WHERE id = 1');
-    const invoice = queryOne('SELECT app_name, primary_color, secondary_color, header_image_url, footer_image_url FROM invoice_settings WHERE id = 1');
+    const invoice = queryOne('SELECT app_name, primary_color, secondary_color, header_image_url, footer_image_url, public_app_url FROM invoice_settings WHERE id = 1');
     return res.json({
       success: true,
       data: {
@@ -2644,6 +2668,7 @@ apiRouter.get('/settings/public', (_req: Request, res: Response) => {
         footer_image_url: invoice?.footer_image_url || '/invoice-footer.svg',
         primary_color: invoice?.primary_color || '#136239',
         secondary_color: invoice?.secondary_color || '#7ba892',
+        public_app_url: invoice?.public_app_url || '',
       },
     });
   } catch (err: any) {
@@ -2747,6 +2772,7 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
       footer_image_url,
       whatsapp_template,
       payment_methods,
+      public_app_url,
     } = req.body;
 
     const isSuperAdmin = req.user?.role_name === 'Super Admin' || req.user?.role_id === 1;
@@ -2770,6 +2796,11 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
         typeof payment_methods === 'string' ? payment_methods : JSON.stringify(payment_methods);
     }
 
+    const finalPublicAppUrl =
+      public_app_url !== undefined
+        ? (public_app_url || '').trim().replace(/\/+$/, '')
+        : (currentSettings?.public_app_url || '');
+
     runQuery(
       `UPDATE invoice_settings
        SET prefix = ?, number_format = ?, start_number = ?, date_format = ?, currency = ?,
@@ -2778,6 +2809,7 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
            primary_color = ?, secondary_color = ?, app_name = ?,
            header_image_url = ?, footer_image_url = ?,
            whatsapp_template = ?, payment_methods = ?,
+           public_app_url = ?,
            updated_at = datetime('now', 'localtime')
        WHERE id = 1`,
       [
@@ -2800,6 +2832,7 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
         finalFooterImage,
         finalWhatsAppTemplate,
         finalPaymentMethods,
+        finalPublicAppUrl,
       ]
     );
 

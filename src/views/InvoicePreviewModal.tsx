@@ -64,16 +64,16 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   if (!isOpen || !data) return null;
 
   const safeInvoiceNumber = data.invoice_number || 'INV';
-  const idQuery = data.id ? `&id=${data.id}` : '';
-  const downloadUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`
-      : `/?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`;
+  const cleanInvNumber = encodeURIComponent(safeInvoiceNumber);
+  let origin = (data.settings?.public_app_url || '').trim().replace(/\/+$/, '');
+  if (!origin && typeof window !== 'undefined') {
+    origin = window.location.origin;
+  }
+  origin = origin.replace(/\/+$/, '');
 
-  const directPdfUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/invoices/public/download-pdf?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`
-      : `/api/invoices/public/download-pdf?inv=${encodeURIComponent(safeInvoiceNumber)}${idQuery}`;
+  const queryParam = data.id ? `id=${data.id}&inv=${cleanInvNumber}` : `inv=${cleanInvNumber}`;
+  const downloadUrl = origin ? `${origin}/?${queryParam}` : `/?${queryParam}`;
+  const directPdfUrl = origin ? `${origin}/download-pdf?${queryParam}` : `/download-pdf?${queryParam}`;
 
   const handleCopyPdfLink = () => {
     try {
@@ -593,9 +593,12 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                   </p>
                 </div>
 
-                <p className="text-[10px] text-emerald-800">
-                  Pelanggan dapat langsung membuka tautan ini di smartphone atau PC untuk mengunduh dan mencetak PDF faktur resmi secara instan tanpa perlu akun atau login.
-                </p>
+                <div className="flex items-start gap-1.5 pt-1 text-[10px] text-emerald-800">
+                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Bebas Login:</strong> Pelanggan dapat langsung membuka tautan ini di browser smartphone atau komputer untuk melihat dan mengunduh file PDF resmi tanpa perlu akun admin dan tanpa perlu login aplikasi.
+                  </span>
+                </div>
               </div>
 
               {/* Editor Teks WhatsApp */}

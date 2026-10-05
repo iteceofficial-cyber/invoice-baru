@@ -121,7 +121,14 @@ function MainAppContent() {
 
   // If not logged in, show Login page
   if (!isAuthenticated) {
-    return <LoginView />;
+    return (
+      <LoginView
+        onOpenPublicInvoice={(id) => {
+          setPublicInvoiceIdentifier(id);
+          window.history.pushState({}, '', `/?inv=${encodeURIComponent(id)}`);
+        }}
+      />
+    );
   }
 
   // Navigation handlers with clean state reset

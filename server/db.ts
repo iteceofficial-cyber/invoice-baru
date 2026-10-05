@@ -29,12 +29,15 @@ Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ri
 🏦 *Metode Pembayaran Resmi:*
 {metode_pembayaran}
 
-📥 *Link Unduh / Cetak Invoice:*
+🌐 *Lihat Faktur Web (Buka di Browser Tanpa Login):*
 {link_download}
+
+📥 *Unduh Langsung File PDF Resmi (Klik untuk Download):*
+{link_pdf}
 
 {catatan}
 
-Faktur invoice resmi dalam format PDF siap diunduh melalui tautan di atas. Silakan hubungi kami apabila memerlukan penyesuaian.
+Faktur invoice resmi dalam format PDF siap diunduh secara instan tanpa perlu akun/login. Silakan hubungi kami apabila memerlukan penyesuaian.
 
 Salam hangat,
 *{nama_perusahaan}*
@@ -390,6 +393,24 @@ function initSchemaAndSeed(db: Database) {
   } catch (e) {}
   try {
     db.run(`ALTER TABLE invoice_settings ADD COLUMN payment_methods TEXT;`);
+  } catch (e) {}
+  try {
+    db.run(`ALTER TABLE invoice_settings ADD COLUMN public_app_url TEXT;`);
+  } catch (e) {}
+
+  // Update existing template to include {link_pdf} if not already present
+  try {
+    const currentTplRow = db.exec(`SELECT whatsapp_template FROM invoice_settings WHERE id = 1;`);
+    const currentTpl = currentTplRow[0]?.values[0]?.[0] as string | undefined;
+    if (currentTpl && !currentTpl.includes('{link_pdf}')) {
+      const updatedTpl = currentTpl.replace(
+        /\{link_download\}/g,
+        `{link_download}\n\n📥 *Unduh Langsung File PDF Resmi:*\n{link_pdf}`
+      );
+      const stmt = db.prepare(`UPDATE invoice_settings SET whatsapp_template = ? WHERE id = 1;`);
+      stmt.run([updatedTpl]);
+      stmt.free();
+    }
   } catch (e) {}
 
   // 10. Activity logs table

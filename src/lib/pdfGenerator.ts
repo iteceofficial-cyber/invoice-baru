@@ -28,12 +28,15 @@ Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ri
 🏦 *Metode Pembayaran Resmi:*
 {metode_pembayaran}
 
-📥 *Link Unduh / Cetak Invoice:*
+🌐 *Lihat Faktur Web (Buka di Browser Tanpa Login):*
 {link_download}
+
+📥 *Unduh Langsung File PDF Resmi (Klik untuk Download):*
+{link_pdf}
 
 {catatan}
 
-Faktur invoice resmi dalam format PDF siap diunduh melalui tautan di atas. Silakan hubungi kami apabila memerlukan penyesuaian.
+Faktur invoice resmi dalam format PDF siap diunduh secara instan tanpa perlu akun/login. Silakan hubungi kami apabila memerlukan penyesuaian.
 
 Salam hangat,
 *{nama_perusahaan}*
@@ -131,6 +134,7 @@ export interface InvoicePDFData {
     footer_image_url?: string;
     whatsapp_template?: string;
     payment_methods?: PaymentMethodItem[] | string;
+    public_app_url?: string;
   };
   payment_methods?: PaymentMethodItem[];
 }
@@ -827,44 +831,36 @@ export function buildWhatsAppInvoiceMessage(
   // Generate public download link (interactive web view & direct PDF link)
   const safeNumber = data.invoice_number || 'INV';
   const cleanInvNumber = encodeURIComponent(safeNumber);
-  const idQuery = data.id ? `&id=${data.id}` : '';
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+
+  // Use configured public base URL if available, otherwise current origin
+  let origin = (data.settings?.public_app_url || '').trim().replace(/\/+$/, '');
+  if (!origin && typeof window !== 'undefined') {
+    origin = window.location.origin;
+  }
+  origin = origin.replace(/\/+$/, '');
+
+  // Prioritize id first so URL parsing never fails even if slashes are in invoice number
+  const queryParam = data.id ? `id=${data.id}&inv=${cleanInvNumber}` : `inv=${cleanInvNumber}`;
+
   const downloadLink =
     downloadUrlOverride ||
-    (origin ? `${origin}/?inv=${cleanInvNumber}${idQuery}` : `/?inv=${cleanInvNumber}${idQuery}`);
+    (origin ? `${origin}/?${queryParam}` : `/?${queryParam}`);
   const directPdfLink = origin
-    ? `${origin}/api/invoices/public/download-pdf?inv=${cleanInvNumber}${idQuery}`
-    : `/api/invoices/public/download-pdf?inv=${cleanInvNumber}${idQuery}`;
+    ? `${origin}/download-pdf?${queryParam}`
+    : `/download-pdf?${queryParam}`;
 
-  const defaultTemplate = `*INFO PAPANDAYAN - FAKTUR INVOICE RESMI*
+  const defaultTemplate = DEFAULT_WHATSAPP_TEMPLATE;
 
-Yth. Bapak/Ibu *{nama_pelanggan}*,
-Terima kasih atas kepercayaannya menggunakan layanan Info Papandayan. Berikut ringkasan faktur tagihan Anda:
+  let template = templateOverride || data.settings?.whatsapp_template || defaultTemplate;
 
-📄 *No. Invoice:* {nomor_invoice}
-📅 *Tanggal Kegiatan:* {tanggal}
-🏷️ *Total Tagihan:* *{total}*
-💳 *Status:* *{status}*
+  // If custom template doesn't include {link_pdf}, intelligently add it below {link_download}
+  if (!template.includes('{link_pdf}') && !template.includes(directPdfLink)) {
+    template = template.replace(
+      /\{link_download\}/g,
+      `{link_download}\n\n📥 *Unduh Langsung File PDF Resmi (Klik untuk Download):*\n{link_pdf}`
+    );
+  }
 
-📋 *Rincian Layanan/Barang:*
-{rincian_barang}
-
-🏦 *Metode Pembayaran Resmi:*
-{metode_pembayaran}
-
-📥 *Link Unduh / Cetak Invoice:*
-{link_download}
-
-{catatan}
-
-Faktur invoice resmi dalam format PDF siap diunduh melalui tautan di atas. Silakan hubungi kami apabila memerlukan penyesuaian.
-
-Salam hangat,
-*{nama_perusahaan}*
-WhatsApp: {telepon_perusahaan}
-Website: {website_perusahaan}`;
-
-  const template = templateOverride || data.settings?.whatsapp_template || defaultTemplate;
   const notesText = data.notes ? `📝 *Catatan:* ${data.notes}` : '';
 
   const result = (template || defaultTemplate)

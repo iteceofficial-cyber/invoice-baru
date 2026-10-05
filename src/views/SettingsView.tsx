@@ -21,6 +21,8 @@ import {
   Upload,
   Eye,
   RefreshCw,
+  Globe,
+  Link2,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { useToast } from '../context/ToastContext.tsx';
@@ -60,6 +62,7 @@ interface InvoiceSettings {
   footer_image_url: string;
   whatsapp_template?: string;
   payment_methods?: PaymentMethodItem[];
+  public_app_url?: string;
 }
 
 export const SettingsView: React.FC = () => {
@@ -102,6 +105,7 @@ export const SettingsView: React.FC = () => {
     app_name: 'Info Papandayan - Invoice & Logistik',
     header_image_url: '/invoice-header.svg',
     footer_image_url: '/invoice-footer.svg',
+    public_app_url: '',
   });
 
   // Multiple payment methods state
@@ -233,6 +237,7 @@ export const SettingsView: React.FC = () => {
       const data = invRes.data;
       setInvoice({
         ...data,
+        public_app_url: data.public_app_url || '',
         header_image_url: data.header_image_url || '/invoice-header.svg',
         footer_image_url: data.footer_image_url || '/invoice-footer.svg',
         primary_color: data.primary_color || '#136239',
@@ -1088,6 +1093,92 @@ export const SettingsView: React.FC = () => {
             </button>
           </div>
 
+          {/* Public App URL & Vercel / Admin Free Access Section */}
+          <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/90 rounded-2xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-[#136239]" />
+                  <span>Domain / URL Publik Faktur WhatsApp</span>
+                  <span className="text-[10px] font-extrabold uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
+                    Bebas Login Admin & Vercel
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-600 mt-1">
+                  Domain ini digunakan untuk menyusun tautan faktur resmi pada <code>{'{link_download}'}</code> dan <code>{'{link_pdf}'}</code> agar pelanggan dapat membuka dan mengunduh faktur secara langsung.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+                  setInvoice((prev) => ({ ...prev, public_app_url: currentOrigin }));
+                  toast.success(`Domain disetel ke: ${currentOrigin}`);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 text-[#136239] text-xs font-bold transition cursor-pointer self-start sm:self-auto shrink-0 shadow-xs"
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>Gunakan Domain Saat Ini</span>
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={invoice.public_app_url || ''}
+                  onChange={(e) => setInvoice({ ...invoice, public_app_url: e.target.value })}
+                  placeholder={`Contoh: https://invoice.infopapandayan.com atau ${typeof window !== 'undefined' ? window.location.origin : 'https://nama-aplikasi.vercel.app'}`}
+                  className="flex-1 px-3.5 py-2.5 rounded-xl border border-emerald-300/80 bg-white text-xs font-mono text-slate-900 focus:ring-2 focus:ring-[#136239] shadow-xs"
+                />
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Kosongkan untuk otomatis menggunakan domain browser saat ini (<code>{typeof window !== 'undefined' ? window.location.origin : 'default'}</code>).
+              </p>
+            </div>
+
+            {/* Live Sample Generated Links */}
+            <div className="bg-white/90 rounded-xl p-3.5 border border-emerald-200/70 space-y-2 text-xs">
+              <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider block">
+                Simulasi Tautan yang Diterima Pelanggan:
+              </span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
+                <div className="p-2 bg-slate-50 rounded-lg border border-slate-200 truncate">
+                  <span className="text-slate-500 block text-[10px] font-sans font-bold">1. Link Faktur Web (Buka di Browser):</span>
+                  <span className="text-[#136239] font-bold">
+                    {(invoice.public_app_url || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '')}/?id=1&inv=INV%2F2026%2F10%2F0001
+                  </span>
+                </div>
+                <div className="p-2 bg-slate-50 rounded-lg border border-slate-200 truncate">
+                  <span className="text-slate-500 block text-[10px] font-sans font-bold">2. Link Unduh PDF Langsung (Streaming Server):</span>
+                  <span className="text-emerald-700 font-bold">
+                    {(invoice.public_app_url || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '')}/download-pdf?id=1
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Vercel Guidance Note */}
+            <div className="bg-amber-50/80 border border-amber-200/80 rounded-xl p-3.5 text-xs text-amber-900 space-y-1.5">
+              <div className="flex items-center gap-2 font-bold text-amber-950">
+                <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>Tips Bebas Login Vercel App untuk Pelanggan:</span>
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-[11px] text-amber-800 pl-1 leading-relaxed">
+                <li>
+                  <strong>Matikan Vercel Authentication (Deployment Protection):</strong> Di dashboard Vercel Anda, buka <code>Settings</code> &gt; <code>Deployment Protection</code> &gt; ubah <em>Vercel Authentication</em> menjadi <strong>Disabled</strong>. Ini mencegah Vercel memblokir pelanggan dengan halaman login Vercel.
+                </li>
+                <li>
+                  <strong>Gunakan Custom Domain:</strong> Domain kustom produksi di Vercel (misal: <code>invoice.perusahaan.com</code>) tidak memerlukan login Vercel. Masukkan domain tersebut pada kolom di atas.
+                </li>
+                <li>
+                  <strong>Alternatif Instan:</strong> Anda juga dapat mengklik tombol <em>"Bagikan File PDF Langsung"</em> di menu Pratinjau Invoice untuk mengirim file dokumen PDF secara langsung ke chat WhatsApp pelanggan tanpa tautan web sama sekali!
+                </li>
+              </ul>
+            </div>
+          </div>
+
           {/* Variable Chips */}
           <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-2">
             <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
@@ -1273,6 +1364,35 @@ export const SettingsView: React.FC = () => {
               placeholder="Contoh instruksi pembayaran default..."
               className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-[#136239]"
             />
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Domain / URL Publik Faktur WhatsApp Pelanggan
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+                  setInvoice((prev) => ({ ...prev, public_app_url: currentOrigin }));
+                  toast.success(`Domain disetel ke: ${currentOrigin}`);
+                }}
+                className="text-xs font-bold text-[#136239] hover:underline cursor-pointer"
+              >
+                Gunakan Domain Saat Ini
+              </button>
+            </div>
+            <input
+              type="url"
+              value={invoice.public_app_url || ''}
+              onChange={(e) => setInvoice({ ...invoice, public_app_url: e.target.value })}
+              placeholder={`Contoh: https://invoice.infopapandayan.com atau ${typeof window !== 'undefined' ? window.location.origin : 'https://nama-aplikasi.vercel.app'}`}
+              className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white font-mono text-xs focus:ring-2 focus:ring-[#136239]"
+            />
+            <p className="text-[11px] text-slate-400">
+              Digunakan saat membagikan tautan faktur ke WhatsApp pelanggan agar bisa diakses langsung tanpa login admin & tanpa login Vercel.
+            </p>
           </div>
 
           <div className="pt-4 border-t border-slate-100 flex justify-end">

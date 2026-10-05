@@ -10,8 +10,20 @@
   },
   "rewrites": [
     {
+      "source": "/(download-pdf|unduh-pdf|faktur-pdf)",
+      "destination": "/api"
+    },
+    {
+      "source": "/pdf/(.*)",
+      "destination": "/api"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api"
+    },
+    {
+      "source": "/((?!api|favicon|.*\\..*).*)",
+      "destination": "/index.html"
     }
   ]
 }

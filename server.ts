@@ -26,6 +26,19 @@ async function startServer() {
     res.redirect(301, '/favicon.svg');
   });
 
+  // Direct PDF download routes (without /api prefix, directly accessible from WhatsApp links)
+  const forwardToPdf = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const qs = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+    req.url = '/invoices/public/download-pdf' + qs;
+    apiRouter(req, res, next);
+  };
+  app.get(['/download-pdf', '/unduh-pdf', '/faktur-pdf'], forwardToPdf);
+  app.get('/pdf/:identifier', (req, res, next) => {
+    const qs = req.url.includes('?') ? '&' + req.url.substring(req.url.indexOf('?') + 1) : '';
+    req.url = `/invoices/public/download-pdf?inv=${encodeURIComponent(req.params.identifier)}${qs}`;
+    apiRouter(req, res, next);
+  });
+
   // Mount API router
   app.use('/api', apiRouter);
 
