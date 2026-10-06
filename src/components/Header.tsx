@@ -1,5 +1,5 @@
 import React from 'react';
-import { Menu, Plus, Building2, UserCircle2 } from 'lucide-react';
+import { Menu, Plus, Building2, UserCircle2, Cloud, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { NavTab } from './Sidebar.tsx';
 
@@ -17,6 +17,21 @@ export const Header: React.FC<HeaderProps> = ({
   companyName = 'Info Papandayan',
 }) => {
   const { user } = useAuth();
+  const [isSyncing, setIsSyncing] = React.useState(false);
+
+  const handleManualSync = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      await fetch('/api/system/pull-cloud', { method: 'POST' });
+      // Trigger a light refresh of the active view by dispatching custom event
+      window.dispatchEvent(new CustomEvent('database_synced'));
+    } catch (e) {
+      console.warn('Sync failed:', e);
+    } finally {
+      setTimeout(() => setIsSyncing(false), 600);
+    }
+  };
 
   const getPageTitle = (tab: NavTab) => {
     switch (tab) {
@@ -66,10 +81,16 @@ export const Header: React.FC<HeaderProps> = ({
               {companyName}
             </span>
             <span className="text-slate-300">•</span>
-            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Cloud Firestore Synced
-            </span>
+            <button
+              onClick={handleManualSync}
+              disabled={isSyncing}
+              title="Klik untuk menyinkronkan data terbaru dari Cloud Firestore"
+              className="inline-flex items-center gap-1.5 text-[11px] text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-200 font-semibold transition cursor-pointer"
+            >
+              <Cloud className="w-3 h-3 text-emerald-600" />
+              <span>{isSyncing ? 'Menyinkronkan...' : 'Cloud Firestore Aktif'}</span>
+              <RefreshCw className={`w-2.5 h-2.5 text-emerald-600 ${isSyncing ? 'animate-spin' : ''}`} />
+            </button>
           </div>
         </div>
       </div>

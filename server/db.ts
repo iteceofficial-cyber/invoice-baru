@@ -202,10 +202,14 @@ export function isCloudPersistenceActive(): boolean {
   return !!firestoreDb && !isFirestoreQuotaExhausted;
 }
 
-export async function checkAndSyncFromFirestore(): Promise<void> {
+export function getCurrentDbVersion(): number {
+  return currentDbVersion;
+}
+
+export async function checkAndSyncFromFirestore(force = false): Promise<void> {
   if (!firestoreDb || isFirestoreQuotaExhausted) return;
   const now = Date.now();
-  if (now - lastCheckTime < 10000) return; // Check at most once every 10s
+  if (!force && now - lastCheckTime < 1500) return; // Check at most once every 1.5s
   lastCheckTime = now;
 
   try {
@@ -214,17 +218,9 @@ export async function checkAndSyncFromFirestore(): Promise<void> {
     const meta = metaSnap.data();
     const cloudVersion = meta?.version || 0;
 
-    const localFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
-    let localMtime = 0;
-    if (localFile) {
-      try {
-        localMtime = fs.statSync(localFile).mtimeMs;
-      } catch {}
-    }
-    const minRequiredVersion = Math.max(currentDbVersion, localMtime);
-
-    // Only update from cloud if cloud is genuinely newer than local disk file and current state
-    if (cloudVersion > minRequiredVersion) {
+    // Compare directly against in-memory currentDbVersion to ensure multi-device sync
+    if (cloudVersion > currentDbVersion) {
+      console.log(`[Firebase Cloud] Snapshot cloud lebih baru terdeteksi (v${cloudVersion} > v${currentDbVersion}). Mengunduh ke memori...`);
       const cloudBuffer = await loadFromFirestore();
       if (cloudBuffer && sqlJsEngine) {
         try {
@@ -232,13 +228,17 @@ export async function checkAndSyncFromFirestore(): Promise<void> {
           const check = testDb.exec('PRAGMA integrity_check;');
           if (check[0]?.values[0]?.[0] === 'ok') {
             dbInstance = testDb;
+            currentDbVersion = cloudVersion;
             try {
               fs.writeFileSync(DB_FILE, cloudBuffer);
             } catch (e) {}
-            currentDbVersion = cloudVersion;
-            console.log('[Firebase Cloud] Basis data server diperbarui dari snapshot Cloud.');
+            console.log(`[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud v${cloudVersion}.`);
+          } else {
+            console.warn('[Firebase Cloud] Snapshot cloud tidak lolos integrity check, mengabaikan.');
           }
-        } catch (e) {}
+        } catch (e) {
+          console.warn('[Firebase Cloud] Gagal menerapkan cloud snapshot:', e);
+        }
       }
     }
   } catch (err: any) {
@@ -398,60 +398,72 @@ export async function getDb(): Promise<Database> {
     }
   }
 
-  // 1. Prefer healthy local disk database
-  const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
-  if (targetFile) {
+  // 1. FIRST PRIORITY: Always check Cloud Firestore if active!
+  // Because Cloud Firestore contains the authoritative multi-device snapshot
+  let loadedFromCloud = false;
+  if (firestoreDb && !isFirestoreQuotaExhausted) {
     try {
-      const fileBuffer = fs.readFileSync(targetFile);
-      const testDb = new SQL.Database(fileBuffer);
-      const check = testDb.exec('PRAGMA integrity_check;');
-      if (check[0]?.values[0]?.[0] === 'ok') {
-        dbInstance = testDb;
-        try {
-          const stat = fs.statSync(targetFile);
-          currentDbVersion = Math.max(currentDbVersion, stat.mtimeMs);
-        } catch {}
-        console.log('[Database] Menggunakan basis data lokal terverifikasi sehat:', targetFile);
-      }
-    } catch (err) {
-      console.warn('[Database] File lokal tidak lolos tes integritas:', err);
-    }
-  }
-
-  // 2. Only if local not ready, load verified snapshot from Cloud Firestore
-  if (!dbInstance) {
-    const cloudBuffer = await loadFromFirestore();
-    if (cloudBuffer) {
-      try {
+      console.log('[Firebase Cloud] Memeriksa snapshot basis data di Cloud Firestore...');
+      const cloudBuffer = await loadFromFirestore();
+      if (cloudBuffer) {
         const testDb = new SQL.Database(cloudBuffer);
         const check = testDb.exec('PRAGMA integrity_check;');
         if (check[0]?.values[0]?.[0] === 'ok') {
           dbInstance = testDb;
+          loadedFromCloud = true;
           try {
             fs.writeFileSync(DB_FILE, cloudBuffer);
           } catch (e) {}
-          console.log('[Database] Menggunakan basis data Cloud Firestore yang terverifikasi sehat');
+          console.log(`[Firebase Cloud] Berhasil memuat basis data dari Cloud Firestore (v${currentDbVersion})`);
+        }
+      }
+    } catch (err) {
+      console.warn('[Firebase Cloud] Gagal memuat dari Cloud Firestore pada inisialisasi:', err);
+    }
+  }
+
+  // 2. SECOND PRIORITY: If Cloud was empty/unavailable, load local disk DB
+  if (!dbInstance) {
+    const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+    if (targetFile) {
+      try {
+        const fileBuffer = fs.readFileSync(targetFile);
+        const testDb = new SQL.Database(fileBuffer);
+        const check = testDb.exec('PRAGMA integrity_check;');
+        if (check[0]?.values[0]?.[0] === 'ok') {
+          dbInstance = testDb;
+          currentDbVersion = Date.now();
+          console.log('[Database] Menggunakan basis data lokal terverifikasi sehat:', targetFile);
         }
       } catch (err) {
-        console.warn('[Database] Cloud buffer tidak valid:', err);
+        console.warn('[Database] File lokal tidak lolos tes integritas:', err);
       }
     }
   }
 
-  // 3. Fallback to clean new DB
+  // 3. THIRD PRIORITY: Fallback to fresh DB
   if (!dbInstance) {
     dbInstance = new SQL.Database();
+    currentDbVersion = Date.now();
   }
 
   // Enable foreign keys
   dbInstance.run('PRAGMA foreign_keys = ON;');
   initSchemaAndSeed(dbInstance);
-  saveDb();
+
+  // If we initialized from local seed or fresh, seed Cloud Firestore immediately so all devices share it
+  if (!loadedFromCloud && firestoreDb && !isFirestoreQuotaExhausted) {
+    try {
+      console.log('[Firebase Cloud] Mengunggah basis data awal ke Cloud Firestore...');
+      saveDb(false);
+      await syncToFirestore();
+    } catch (e) {}
+  }
 
   return dbInstance;
 }
 
-export function saveDb() {
+export function saveDb(syncNow = false) {
   if (!dbInstance) return;
   try {
     // Integrity check before saving to disk
@@ -467,16 +479,25 @@ export function saveDb() {
     const data = dbInstance.export();
     const buffer = Buffer.from(data);
     fs.writeFileSync(DB_FILE, buffer);
-    currentDbVersion = Date.now();
   } catch (err) {
     console.warn('[Database] Warning: Could not write to disk, changes preserved in memory:', err);
   }
 
-  // Debounced cloud sync (3 seconds) to avoid spamming and preserve Firestore daily quotas
-  if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
-  syncDebounceTimer = setTimeout(() => {
+  if (syncNow) {
+    if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
     syncToFirestore().catch(() => {});
-  }, 3000);
+  } else {
+    // Fast debounce: 500ms for swift cloud replication
+    if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(() => {
+      syncToFirestore().catch(() => {});
+    }, 500);
+  }
+}
+
+export async function saveAndSyncDb(): Promise<void> {
+  saveDb(false);
+  await syncToFirestore();
 }
 
 // Helper to execute select queries and return array of objects

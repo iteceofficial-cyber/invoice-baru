@@ -61,6 +61,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onPrev
 
   useEffect(() => {
     loadStats();
+    const handleSync = () => loadStats();
+    window.addEventListener('database_synced', handleSync);
+    window.addEventListener('focus', handleSync);
+    return () => {
+      window.removeEventListener('database_synced', handleSync);
+      window.removeEventListener('focus', handleSync);
+    };
   }, []);
 
   const handleQuickDownloadPDF = async (invId: number) => {

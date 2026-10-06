@@ -99,6 +99,16 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
     loadInvoices();
   }, [search, statusFilter, startDate, endDate, page]);
 
+  useEffect(() => {
+    const handleSync = () => loadInvoices();
+    window.addEventListener('database_synced', handleSync);
+    window.addEventListener('focus', handleSync);
+    return () => {
+      window.removeEventListener('database_synced', handleSync);
+      window.removeEventListener('focus', handleSync);
+    };
+  }, []);
+
   // Handle external trigger for preview (e.g. from Dashboard)
   useEffect(() => {
     if (previewInvoiceId) {

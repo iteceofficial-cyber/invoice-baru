@@ -8,11 +8,13 @@ import {
   queryOne,
   runQuery,
   saveDb,
+  saveAndSyncDb,
   DEFAULT_WHATSAPP_TEMPLATE,
   DEFAULT_PAYMENT_METHODS,
   isCloudPersistenceActive,
   syncToFirestore,
   checkAndSyncFromFirestore,
+  getCurrentDbVersion,
 } from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
 import jsPDF from 'jspdf';
@@ -27,6 +29,31 @@ const upload = multer({
 export const apiRouter = express.Router();
 
 // ==========================================
+// AUTO-SYNC MIDDLEWARE ACROSS DEVICES & LINKS
+// ==========================================
+apiRouter.use(async (req, res, next) => {
+  // 1. Sync from Cloud Firestore if a newer cloud snapshot exists
+  try {
+    await checkAndSyncFromFirestore();
+  } catch (err) {
+    console.warn('[Auto-sync Check Warning]:', err);
+  }
+
+  // 2. On successful data mutation, immediately ensure cloud sync triggers
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && !req.path.includes('/system/sync-cloud')) {
+    const originalJson = res.json.bind(res);
+    res.json = function (body: any) {
+      if (body && body.success !== false) {
+        saveDb(true); // Immediate sync to Firestore
+      }
+      return originalJson(body);
+    };
+  }
+
+  next();
+});
+
+// ==========================================
 // CLOUD PERSISTENCE & SYNC ROUTES
 // ==========================================
 
@@ -36,6 +63,7 @@ apiRouter.get('/system/cloud-status', (_req: Request, res: Response) => {
     success: true,
     cloud_active: active,
     provider: 'Google Cloud Firestore',
+    version: getCurrentDbVersion(),
     message: active
       ? 'Basis data aktif terhubung ke Cloud Firestore. Data tersimpan aman dan tidak akan hilang di browser atau perangkat lain.'
       : 'Mode basis data lokal aktif.',
@@ -48,11 +76,28 @@ apiRouter.post('/system/sync-cloud', requireAuth, async (_req: AuthenticatedRequ
     return res.json({
       success: true,
       message: 'Basis data berhasil disinkronkan ke Cloud Firestore!',
+      version: getCurrentDbVersion(),
     });
   } catch (err: any) {
     return res.status(500).json({
       success: false,
       message: 'Gagal menyinkronkan data: ' + (err?.message || String(err)),
+    });
+  }
+});
+
+apiRouter.post('/system/pull-cloud', async (_req: Request, res: Response) => {
+  try {
+    await checkAndSyncFromFirestore(true);
+    return res.json({
+      success: true,
+      message: 'Basis data berhasil diperbarui dari Cloud Firestore!',
+      version: getCurrentDbVersion(),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal memuat data dari cloud: ' + (err?.message || String(err)),
     });
   }
 });
