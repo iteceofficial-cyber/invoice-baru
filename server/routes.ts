@@ -3213,7 +3213,16 @@ apiRouter.put('/settings/invoice', requireAuth, async (req: AuthenticatedRequest
 // Dedicated route to update Kop Header & Footer specifically
 apiRouter.put('/settings/header-footer', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { header_image_url, footer_image_url, footer_text } = req.body;
+    const {
+      header_image_url,
+      footer_image_url,
+      footer_text,
+      company_name,
+      address,
+      phone,
+      email,
+      website,
+    } = req.body;
 
     const currentSettings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
     const finalHeaderImage = header_image_url !== undefined ? header_image_url : (currentSettings?.header_image_url || '/invoice-header.svg');
@@ -3227,11 +3236,20 @@ apiRouter.put('/settings/header-footer', requireAuth, async (req: AuthenticatedR
       [finalHeaderImage, finalFooterImage, finalFooterText]
     );
 
-    // Sync company logo if header is valid image
-    if (finalHeaderImage) {
+    // If company details passed, also update company_settings
+    if (company_name || address || phone || email || website) {
+      const currentComp = queryOne<any>('SELECT * FROM company_settings WHERE id = 1');
       runQuery(
-        `UPDATE company_settings SET logo_url = ?, updated_at = datetime('now', 'localtime') WHERE id = 1`,
-        [finalHeaderImage]
+        `UPDATE company_settings
+         SET company_name = ?, address = ?, phone = ?, email = ?, website = ?, updated_at = datetime('now', 'localtime')
+         WHERE id = 1`,
+        [
+          company_name !== undefined ? company_name.trim() : (currentComp?.company_name || 'Info Papandayan'),
+          address !== undefined ? address.trim() : (currentComp?.address || ''),
+          phone !== undefined ? phone.trim() : (currentComp?.phone || ''),
+          email !== undefined ? email.trim() : (currentComp?.email || ''),
+          website !== undefined ? website.trim() : (currentComp?.website || ''),
+        ]
       );
     }
 
@@ -3246,6 +3264,8 @@ apiRouter.put('/settings/header-footer', requireAuth, async (req: AuthenticatedR
       req.ip
     );
 
+    const updatedComp = queryOne<any>('SELECT * FROM company_settings WHERE id = 1');
+
     return res.json({
       success: true,
       message: 'Kop Header & Footer berhasil disimpan secara permanen dan disinkronkan ke Cloud Firestore!',
@@ -3253,6 +3273,7 @@ apiRouter.put('/settings/header-footer', requireAuth, async (req: AuthenticatedR
         header_image_url: finalHeaderImage,
         footer_image_url: finalFooterImage,
         footer_text: finalFooterText,
+        company: updatedComp,
       },
     });
   } catch (err: any) {

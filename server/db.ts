@@ -5,7 +5,7 @@ import path from 'path';
 import bcrypt from 'bcryptjs';
 import { createRequire } from 'module';
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc, setLogLevel, terminate } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, getDocFromServer, setDoc, setLogLevel, terminate } from 'firebase/firestore';
 
 setLogLevel('silent'); // Suppress verbose internal gRPC retry logs when quota limit is reached
 
@@ -206,47 +206,61 @@ export function getCurrentDbVersion(): number {
   return currentDbVersion;
 }
 
+let syncCheckMutex: Promise<void> | null = null;
+
 export async function checkAndSyncFromFirestore(force = false): Promise<void> {
   if (!firestoreDb || isFirestoreQuotaExhausted) return;
   const now = Date.now();
   if (!force && now - lastCheckTime < 1500) return; // Check at most once every 1.5s
   lastCheckTime = now;
 
-  try {
-    const metaSnap = await getDoc(doc(firestoreDb, 'system', 'database_meta'));
-    if (!metaSnap.exists()) return;
-    const meta = metaSnap.data();
-    const cloudVersion = meta?.version || 0;
+  if (syncCheckMutex) {
+    return syncCheckMutex;
+  }
 
-    // Compare directly against in-memory currentDbVersion to ensure multi-device sync
-    if (cloudVersion > currentDbVersion) {
-      console.log(`[Firebase Cloud] Snapshot cloud lebih baru terdeteksi (v${cloudVersion} > v${currentDbVersion}). Mengunduh ke memori...`);
-      const cloudBuffer = await loadFromFirestore();
-      if (cloudBuffer && sqlJsEngine) {
-        try {
-          const testDb = new sqlJsEngine.Database(cloudBuffer);
-          const check = testDb.exec('PRAGMA integrity_check;');
-          if (check[0]?.values[0]?.[0] === 'ok') {
-            dbInstance = testDb;
-            currentDbVersion = cloudVersion;
-            try {
-              fs.writeFileSync(DB_FILE, cloudBuffer);
-            } catch (e) {}
-            console.log(`[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud v${cloudVersion}.`);
-          } else {
-            console.warn('[Firebase Cloud] Snapshot cloud tidak lolos integrity check, mengabaikan.');
+  syncCheckMutex = (async () => {
+    try {
+      // Force read directly from server to bypass any stale local cache across containers/links
+      const metaSnap = await getDocFromServer(doc(firestoreDb, 'system', 'database_meta'));
+      if (!metaSnap.exists()) return;
+      const meta = metaSnap.data();
+      const cloudVersion = meta?.version || 0;
+
+      // Compare directly against in-memory currentDbVersion to ensure multi-device sync
+      if (cloudVersion > currentDbVersion) {
+        console.log(`[Firebase Cloud] Snapshot cloud lebih baru terdeteksi (v${cloudVersion} > v${currentDbVersion}). Mengunduh ke memori...`);
+        const cloudBuffer = await loadFromFirestore();
+        if (cloudBuffer && sqlJsEngine) {
+          try {
+            const testDb = new sqlJsEngine.Database(cloudBuffer);
+            const check = testDb.exec('PRAGMA integrity_check;');
+            if (check[0]?.values[0]?.[0] === 'ok') {
+              testDb.run('PRAGMA foreign_keys = ON;');
+              dbInstance = testDb;
+              currentDbVersion = cloudVersion;
+              try {
+                fs.writeFileSync(DB_FILE, cloudBuffer);
+              } catch (e) {}
+              console.log(`[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud v${cloudVersion}.`);
+            } else {
+              console.warn('[Firebase Cloud] Snapshot cloud tidak lolos integrity check, mengabaikan.');
+            }
+          } catch (e) {
+            console.warn('[Firebase Cloud] Gagal menerapkan cloud snapshot:', e);
           }
-        } catch (e) {
-          console.warn('[Firebase Cloud] Gagal menerapkan cloud snapshot:', e);
         }
       }
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota limit') || err?.code === 'resource-exhausted') {
+        markQuotaExhausted();
+      }
     }
-  } catch (err: any) {
-    const msg = String(err?.message || err);
-    if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota limit') || err?.code === 'resource-exhausted') {
-      markQuotaExhausted();
-    }
-  }
+  })().finally(() => {
+    syncCheckMutex = null;
+  });
+
+  return syncCheckMutex;
 }
 
 export async function syncToFirestore(): Promise<void> {
@@ -318,14 +332,17 @@ export async function syncToFirestore(): Promise<void> {
 export async function loadFromFirestore(): Promise<Buffer | null> {
   if (!firestoreDb || isFirestoreQuotaExhausted) return null;
   try {
-    const metaSnap = await getDoc(doc(firestoreDb, 'system', 'database_meta'));
+    const metaSnap = await getDocFromServer(doc(firestoreDb, 'system', 'database_meta'));
     if (!metaSnap.exists()) return null;
     const meta = metaSnap.data();
     const totalChunks = meta?.total_chunks || 1;
     let fullBase64 = '';
     for (let i = 0; i < totalChunks; i++) {
-      const chunkSnap = await getDoc(doc(firestoreDb, 'system', `database_chunk_${i}`));
-      if (!chunkSnap.exists()) return null;
+      const chunkSnap = await getDocFromServer(doc(firestoreDb, 'system', `database_chunk_${i}`));
+      if (!chunkSnap.exists()) {
+        console.warn(`[Firebase Cloud] Chunk ${i} tidak ditemukan di Cloud Firestore.`);
+        return null;
+      }
       fullBase64 += chunkSnap.data()?.data || '';
     }
     if (fullBase64.length > 0) {
@@ -335,6 +352,7 @@ export async function loadFromFirestore(): Promise<Buffer | null> {
           const testDb = new sqlJsEngine.Database(buffer);
           const check = testDb.exec('PRAGMA integrity_check;');
           if (check[0]?.values[0]?.[0] === 'ok') {
+            testDb.run('PRAGMA foreign_keys = ON;');
             currentDbVersion = meta?.version || Date.now();
             return buffer;
           } else {
@@ -401,24 +419,40 @@ export async function getDb(): Promise<Database> {
   // 1. FIRST PRIORITY: Always check Cloud Firestore if active!
   // Because Cloud Firestore contains the authoritative multi-device snapshot
   let loadedFromCloud = false;
+  let cloudMetaAlreadyExists = false;
+
   if (firestoreDb && !isFirestoreQuotaExhausted) {
-    try {
-      console.log('[Firebase Cloud] Memeriksa snapshot basis data di Cloud Firestore...');
-      const cloudBuffer = await loadFromFirestore();
-      if (cloudBuffer) {
-        const testDb = new SQL.Database(cloudBuffer);
-        const check = testDb.exec('PRAGMA integrity_check;');
-        if (check[0]?.values[0]?.[0] === 'ok') {
-          dbInstance = testDb;
-          loadedFromCloud = true;
-          try {
-            fs.writeFileSync(DB_FILE, cloudBuffer);
-          } catch (e) {}
-          console.log(`[Firebase Cloud] Berhasil memuat basis data dari Cloud Firestore (v${currentDbVersion})`);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`[Firebase Cloud] Memeriksa snapshot basis data di Cloud Firestore (Percobaan ${attempt})...`);
+        const metaSnap = await getDocFromServer(doc(firestoreDb, 'system', 'database_meta'));
+        if (metaSnap.exists()) {
+          cloudMetaAlreadyExists = true;
+          const cloudBuffer = await loadFromFirestore();
+          if (cloudBuffer) {
+            const testDb = new SQL.Database(cloudBuffer);
+            const check = testDb.exec('PRAGMA integrity_check;');
+            if (check[0]?.values[0]?.[0] === 'ok') {
+              testDb.run('PRAGMA foreign_keys = ON;');
+              dbInstance = testDb;
+              loadedFromCloud = true;
+              try {
+                fs.writeFileSync(DB_FILE, cloudBuffer);
+              } catch (e) {}
+              console.log(`[Firebase Cloud] Berhasil memuat basis data dari Cloud Firestore (v${currentDbVersion})`);
+              break;
+            }
+          }
+        } else {
+          // Metadata doesn't exist yet in Firestore
+          break;
+        }
+      } catch (err) {
+        console.warn(`[Firebase Cloud] Percobaan ${attempt} memuat dari Cloud Firestore gagal:`, err);
+        if (attempt === 1) {
+          await new Promise((r) => setTimeout(r, 400));
         }
       }
-    } catch (err) {
-      console.warn('[Firebase Cloud] Gagal memuat dari Cloud Firestore pada inisialisasi:', err);
     }
   }
 
@@ -432,7 +466,8 @@ export async function getDb(): Promise<Database> {
         const check = testDb.exec('PRAGMA integrity_check;');
         if (check[0]?.values[0]?.[0] === 'ok') {
           dbInstance = testDb;
-          currentDbVersion = Date.now();
+          // Set version to 0 so any active cloud snapshot will supersede it automatically
+          currentDbVersion = 0;
           console.log('[Database] Menggunakan basis data lokal terverifikasi sehat:', targetFile);
         }
       } catch (err) {
@@ -444,17 +479,18 @@ export async function getDb(): Promise<Database> {
   // 3. THIRD PRIORITY: Fallback to fresh DB
   if (!dbInstance) {
     dbInstance = new SQL.Database();
-    currentDbVersion = Date.now();
+    currentDbVersion = 0;
   }
 
   // Enable foreign keys
   dbInstance.run('PRAGMA foreign_keys = ON;');
   initSchemaAndSeed(dbInstance);
 
-  // If we initialized from local seed or fresh, seed Cloud Firestore immediately so all devices share it
-  if (!loadedFromCloud && firestoreDb && !isFirestoreQuotaExhausted) {
+  // SAFE SEEDING: ONLY seed Cloud Firestore if Cloud Firestore NEVER had data before (empty project)
+  // NEVER overwrite existing Cloud Firestore data if cloudMetaAlreadyExists is true!
+  if (!loadedFromCloud && !cloudMetaAlreadyExists && firestoreDb && !isFirestoreQuotaExhausted) {
     try {
-      console.log('[Firebase Cloud] Mengunggah basis data awal ke Cloud Firestore...');
+      console.log('[Firebase Cloud] Menginisialisasi basis data awal ke Cloud Firestore yang masih kosong...');
       saveDb(false);
       await syncToFirestore();
     } catch (e) {}

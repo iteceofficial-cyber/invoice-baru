@@ -60,13 +60,8 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 export async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-    console.log('[Firestore] Connection verified successfully.');
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    } else {
-      console.log('[Firestore] Connected to Cloud Firestore database.');
-    }
+    // Backend API handles database persistence and Cloud Firestore synchronization directly
   }
 }
 
