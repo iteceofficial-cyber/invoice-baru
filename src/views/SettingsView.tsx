@@ -749,43 +749,43 @@ export const SettingsView: React.FC = () => {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <span>1. Banner Kop Header (Bagian Atas Dokumen Faktur)</span>
+                  <span>Banner Kop Header (Bagian Atas Invoice)</span>
                   <span className="text-[10px] font-semibold uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
                     Kop Resmi
                   </span>
                 </h4>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Format banner: Gambar rasio memanjang lebar (disarankan 1200 x 310 piksel), format .PNG, .JPG, atau .SVG.
+                  Format yang disarankan: Gambar rasio memanjang lebar (1200 x 310 piksel), SVG atau PNG transparan/putih.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInvoice((prev) => ({ ...prev, header_image_url: '/invoice-header.svg' }));
-                    toast.info('Kop Header direset ke default resmi Info Papandayan');
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold transition cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Reset Default</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setInvoice((prev) => ({ ...prev, header_image_url: '/invoice-header.svg' }));
+                  toast.info('Kop Header direset ke default resmi Info Papandayan');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset Header Default</span>
+              </button>
             </div>
 
             {/* Header Image Preview Box */}
-            <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-inner flex flex-col items-center justify-center min-h-[100px] overflow-hidden">
+            <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-inner flex flex-col items-center justify-center min-h-[100px]">
               {invoice.header_image_url ? (
                 <img
                   src={invoice.header_image_url}
                   alt="Pratinjau Kop Header"
-                  className="max-h-28 w-auto max-w-full object-contain rounded-lg"
+                  className="max-h-28 w-auto object-contain rounded-lg"
                   onError={(e) => {
                     const target = e.currentTarget;
                     if (!target.dataset.hasFailed) {
                       target.dataset.hasFailed = 'true';
                       target.src = '/invoice-header.svg';
+                    } else {
+                      target.style.display = 'none';
                     }
                   }}
                 />
@@ -815,7 +815,7 @@ export const SettingsView: React.FC = () => {
                   className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-[#136239]/40 bg-emerald-50/50 hover:bg-emerald-100/60 text-[#136239] text-xs font-bold transition cursor-pointer"
                 >
                   <Upload className="w-4 h-4" />
-                  <span>Pilih & Unggah File Banner Header (.svg, .png, .jpg)</span>
+                  <span>Unggah File Banner Header (.svg, .png, .jpg)</span>
                 </button>
               </div>
 
@@ -824,7 +824,7 @@ export const SettingsView: React.FC = () => {
                   type="text"
                   value={invoice.header_image_url}
                   onChange={(e) => setInvoice({ ...invoice, header_image_url: e.target.value })}
-                  placeholder="Atau masukkan URL / path banner (contoh: /invoice-header.svg)"
+                  placeholder="Atau masukkan URL / path header (contoh: /invoice-header.svg)"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-mono text-slate-800 focus:ring-2 focus:ring-[#136239]"
                 />
               </div>
@@ -836,13 +836,13 @@ export const SettingsView: React.FC = () => {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <span>2. Banner Kop Footer (Bagian Bawah Dokumen Faktur)</span>
+                  <span>Banner Kop Footer (Bagian Bawah Invoice)</span>
                   <span className="text-[10px] font-semibold uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
                     Kop Resmi
                   </span>
                 </h4>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Format banner: Gambar rasio memanjang lebar (disarankan 1200 x 310 piksel), format .PNG, .JPG, atau .SVG.
+                  Format yang disarankan: Gambar rasio memanjang lebar (1200 x 310 piksel), SVG atau PNG.
                 </p>
               </div>
 
@@ -855,22 +855,24 @@ export const SettingsView: React.FC = () => {
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold transition cursor-pointer self-start sm:self-auto"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Reset Default</span>
+                <span>Reset Footer Default</span>
               </button>
             </div>
 
             {/* Footer Image Preview Box */}
-            <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-inner flex flex-col items-center justify-center min-h-[100px] overflow-hidden">
+            <div className="p-3 bg-white rounded-xl border border-slate-200 shadow-inner flex flex-col items-center justify-center min-h-[100px]">
               {invoice.footer_image_url ? (
                 <img
                   src={invoice.footer_image_url}
                   alt="Pratinjau Kop Footer"
-                  className="max-h-28 w-auto max-w-full object-contain rounded-lg"
+                  className="max-h-28 w-auto object-contain rounded-lg"
                   onError={(e) => {
                     const target = e.currentTarget;
                     if (!target.dataset.hasFailed) {
                       target.dataset.hasFailed = 'true';
                       target.src = '/invoice-footer.svg';
+                    } else {
+                      target.style.display = 'none';
                     }
                   }}
                 />
@@ -900,7 +902,7 @@ export const SettingsView: React.FC = () => {
                   className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-[#136239]/40 bg-emerald-50/50 hover:bg-emerald-100/60 text-[#136239] text-xs font-bold transition cursor-pointer"
                 >
                   <Upload className="w-4 h-4" />
-                  <span>Pilih & Unggah File Banner Footer (.svg, .png, .jpg)</span>
+                  <span>Unggah File Banner Footer (.svg, .png, .jpg)</span>
                 </button>
               </div>
 
@@ -909,108 +911,28 @@ export const SettingsView: React.FC = () => {
                   type="text"
                   value={invoice.footer_image_url}
                   onChange={(e) => setInvoice({ ...invoice, footer_image_url: e.target.value })}
-                  placeholder="Atau masukkan URL / path banner footer (contoh: /invoice-footer.svg)"
+                  placeholder="Atau masukkan URL / path footer (contoh: /invoice-footer.svg)"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-mono text-slate-800 focus:ring-2 focus:ring-[#136239]"
                 />
               </div>
             </div>
           </div>
 
-          {/* Section 3: Informasi Identitas Kop Surat */}
-          <div className="p-5 rounded-2xl bg-slate-50/70 border border-slate-200 space-y-4">
-            <div>
-              <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Building2 className="w-4 h-4 text-[#136239]" />
-                <span>3. Informasi Teks Identitas Kop Surat & Kontak Usaha</span>
-              </h4>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Data kontak ini dicantumkan pada header faktur, teks pengesahan, dan rincian kontak resmi perusahaan.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Nama Perusahaan / Usaha
-                </label>
-                <input
-                  type="text"
-                  value={company.company_name}
-                  onChange={(e) => setCompany({ ...company, company_name: e.target.value })}
-                  placeholder="Info Papandayan"
-                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-900 focus:ring-2 focus:ring-[#136239]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Nomor Telepon / WhatsApp
-                </label>
-                <input
-                  type="text"
-                  value={company.phone}
-                  onChange={(e) => setCompany({ ...company, phone: e.target.value })}
-                  placeholder="+62 822-4063-0123"
-                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-[#136239]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Email Usaha
-                </label>
-                <input
-                  type="email"
-                  value={company.email}
-                  onChange={(e) => setCompany({ ...company, email: e.target.value })}
-                  placeholder="info@infopapandayan.com"
-                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs text-slate-900 focus:ring-2 focus:ring-[#136239]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Website Usaha
-                </label>
-                <input
-                  type="text"
-                  value={company.website}
-                  onChange={(e) => setCompany({ ...company, website: e.target.value })}
-                  placeholder="https://infopapandayan.com"
-                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs text-slate-900 focus:ring-2 focus:ring-[#136239]"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Alamat Lengkap Operasional Usaha
-                </label>
-                <input
-                  type="text"
-                  value={company.address}
-                  onChange={(e) => setCompany({ ...company, address: e.target.value })}
-                  placeholder="Jl. Kawah Papandayan, Karamat Wangi, Cisurupan, Garut"
-                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs text-slate-900 focus:ring-2 focus:ring-[#136239]"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Section 4: Catatan / Teks Footer */}
+          {/* Section 3: Catatan / Teks Footer */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-              4. Teks Keterangan Footer / Catatan Pengesahan Dokumen
+              Teks Keterangan Footer / Catatan Pengesahan Dokumen
             </label>
             <textarea
               rows={2}
               value={invoice.footer_text || ''}
               onChange={(e) => setInvoice({ ...invoice, footer_text: e.target.value })}
-              placeholder="Contoh: Faktur invoice resmi dan sah diproses komputerisasi Info Papandayan..."
+              placeholder="Contoh: Invoice ini diterbitkan secara sah dan diproses otomatis oleh sistem..."
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs focus:ring-2 focus:ring-[#136239] focus:bg-white"
             />
           </div>
 
-          {/* Section 5: Live Invoice Letterhead Preview */}
+          {/* Section 4: Live Invoice Letterhead Preview */}
           <div className="p-5 rounded-2xl bg-slate-900 text-white space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold flex items-center gap-2 text-emerald-400">
@@ -1026,12 +948,14 @@ export const SettingsView: React.FC = () => {
                 <img
                   src={invoice.header_image_url || '/invoice-header.svg'}
                   alt="Header Preview"
-                  className="w-full max-h-24 object-contain mx-auto"
+                  className="w-full max-h-20 object-contain mx-auto"
                   onError={(e) => {
                     const target = e.currentTarget;
                     if (!target.dataset.hasFailed) {
                       target.dataset.hasFailed = 'true';
                       target.src = '/invoice-header.svg';
+                    } else {
+                      target.style.display = 'none';
                     }
                   }}
                 />
@@ -1043,7 +967,7 @@ export const SettingsView: React.FC = () => {
                   <div>
                     <p className="text-[10px] text-slate-400 font-bold uppercase">Ditagihkan Kepada:</p>
                     <p className="font-bold text-slate-900">PT Pelanggan Contoh Utama</p>
-                    <p className="text-[11px] text-slate-500">Klien Operasional {company.company_name || 'Info Papandayan'}</p>
+                    <p className="text-[11px] text-slate-500">Klien Operasional Info Papandayan</p>
                   </div>
                   <div className="text-right">
                     <p className="font-mono font-bold text-emerald-800">INV/2026/10/0001</p>
@@ -1057,7 +981,7 @@ export const SettingsView: React.FC = () => {
                     <span>Subtotal</span>
                   </div>
                   <div className="p-1.5 flex justify-between border-t border-slate-100">
-                    <span>1. Paket Layanan Wisata & Logistik</span>
+                    <span>1. Paket Layanan Wisata & Peralatan</span>
                     <span className="font-bold">Rp 12.500.000</span>
                   </div>
                 </div>
@@ -1079,6 +1003,8 @@ export const SettingsView: React.FC = () => {
                     if (!target.dataset.hasFailed) {
                       target.dataset.hasFailed = 'true';
                       target.src = '/invoice-footer.svg';
+                    } else {
+                      target.style.display = 'none';
                     }
                   }}
                 />
@@ -1088,7 +1014,7 @@ export const SettingsView: React.FC = () => {
 
           <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
             <p className="text-xs text-slate-500">
-              Perubahan header, footer, dan identitas kop langsung diterapkan pada cetak PDF A4, pratinjau, dan tautan publik pelanggan.
+              Perubahan header dan footer langsung diterapkan pada cetak PDF A4, pratinjau, dan tautan publik pelanggan.
             </p>
             <button
               type="submit"
@@ -1097,8 +1023,6 @@ export const SettingsView: React.FC = () => {
             >
               <Save className="w-4 h-4" />
               <span>{saving ? 'Menyimpan...' : 'Simpan Kop Header & Footer'}</span>
-            </button>
-          </div>
             </button>
           </div>
         </form>
