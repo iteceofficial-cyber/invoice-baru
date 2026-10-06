@@ -3087,7 +3087,7 @@ apiRouter.get('/settings/invoice', requireAuth, (_req: AuthenticatedRequest, res
   }
 });
 
-apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+apiRouter.put('/settings/invoice', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
       prefix,
@@ -3112,15 +3112,13 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
       public_app_url,
     } = req.body;
 
-    const isSuperAdmin = req.user?.role_name === 'Super Admin' || req.user?.role_id === 1;
-
     // Retrieve current settings
     const currentSettings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
     let finalHeaderImage = currentSettings?.header_image_url || '/invoice-header.svg';
     let finalFooterImage = currentSettings?.footer_image_url || '/invoice-footer.svg';
 
-    if (header_image_url !== undefined) finalHeaderImage = header_image_url;
-    if (footer_image_url !== undefined) finalFooterImage = footer_image_url;
+    if (header_image_url !== undefined && header_image_url !== null) finalHeaderImage = header_image_url;
+    if (footer_image_url !== undefined && footer_image_url !== null) finalFooterImage = footer_image_url;
 
     const finalWhatsAppTemplate =
       whatsapp_template !== undefined
@@ -3128,7 +3126,7 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
         : currentSettings?.whatsapp_template || DEFAULT_WHATSAPP_TEMPLATE;
 
     let finalPaymentMethods = currentSettings?.payment_methods || JSON.stringify(DEFAULT_PAYMENT_METHODS);
-    if (payment_methods !== undefined) {
+    if (payment_methods !== undefined && payment_methods !== null) {
       if (Array.isArray(payment_methods) && payment_methods.length > 0) {
         finalPaymentMethods = JSON.stringify(payment_methods);
       } else if (typeof payment_methods === 'string' && payment_methods.trim().startsWith('[')) {
@@ -3181,7 +3179,8 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
       ]
     );
 
-    saveDb();
+    // Ensure Cloud Firestore is 100% updated before sending response
+    await saveAndSyncDb();
 
     logActivity(
       req.user?.id || null,
@@ -3198,7 +3197,7 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
 
     return res.json({
       success: true,
-      message: 'Pengaturan invoice, template WhatsApp, dan metode pembayaran berhasil disimpan',
+      message: 'Pengaturan invoice, template WhatsApp, dan metode pembayaran berhasil disimpan ke database & cloud!',
       data: {
         header_image_url: finalHeaderImage,
         footer_image_url: finalFooterImage,
@@ -3211,8 +3210,58 @@ apiRouter.put('/settings/invoice', requireAuth, (req: AuthenticatedRequest, res:
   }
 });
 
+// Dedicated route to update Kop Header & Footer specifically
+apiRouter.put('/settings/header-footer', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { header_image_url, footer_image_url, footer_text } = req.body;
+
+    const currentSettings = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
+    const finalHeaderImage = header_image_url !== undefined ? header_image_url : (currentSettings?.header_image_url || '/invoice-header.svg');
+    const finalFooterImage = footer_image_url !== undefined ? footer_image_url : (currentSettings?.footer_image_url || '/invoice-footer.svg');
+    const finalFooterText = footer_text !== undefined ? footer_text : (currentSettings?.footer_text || '');
+
+    runQuery(
+      `UPDATE invoice_settings
+       SET header_image_url = ?, footer_image_url = ?, footer_text = ?, updated_at = datetime('now', 'localtime')
+       WHERE id = 1`,
+      [finalHeaderImage, finalFooterImage, finalFooterText]
+    );
+
+    // Sync company logo if header is valid image
+    if (finalHeaderImage) {
+      runQuery(
+        `UPDATE company_settings SET logo_url = ?, updated_at = datetime('now', 'localtime') WHERE id = 1`,
+        [finalHeaderImage]
+      );
+    }
+
+    // Await cloud sync directly so it's 100% saved in Firestore BEFORE responding!
+    await saveAndSyncDb();
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Mengubah Kop Header & Footer',
+      'Memperbarui gambar banner kop surat header dan footer invoice resmi',
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: 'Kop Header & Footer berhasil disimpan secara permanen dan disinkronkan ke Cloud Firestore!',
+      data: {
+        header_image_url: finalHeaderImage,
+        footer_image_url: finalFooterImage,
+        footer_text: finalFooterText,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal menyimpan Kop Header & Footer: ' + err.message });
+  }
+});
+
 // Update payment methods specifically
-apiRouter.put('/settings/payment-methods', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+apiRouter.put('/settings/payment-methods', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { payment_methods } = req.body;
     if (!Array.isArray(payment_methods) || payment_methods.length === 0) {
@@ -3244,7 +3293,8 @@ apiRouter.put('/settings/payment-methods', requireAuth, (req: AuthenticatedReque
       );
     }
 
-    saveDb();
+    // Await cloud sync directly so it's 100% saved in Firestore BEFORE responding!
+    await saveAndSyncDb();
 
     logActivity(
       req.user?.id || null,
@@ -3256,7 +3306,7 @@ apiRouter.put('/settings/payment-methods', requireAuth, (req: AuthenticatedReque
 
     return res.json({
       success: true,
-      message: 'Daftar metode pembayaran berhasil diperbarui!',
+      message: 'Daftar metode pembayaran berhasil diperbarui dan disinkronkan ke Cloud Firestore!',
       data: payment_methods,
     });
   } catch (err: any) {
@@ -3500,7 +3550,7 @@ apiRouter.get('/activity-logs', requireAuth, (req: AuthenticatedRequest, res: Re
 });
 
 // Delete single activity log
-apiRouter.delete('/activity-logs/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+apiRouter.delete('/activity-logs/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const existing = queryOne('SELECT * FROM activity_logs WHERE id = ?', [id]);
@@ -3509,7 +3559,7 @@ apiRouter.delete('/activity-logs/:id', requireAuth, (req: AuthenticatedRequest, 
     }
 
     runQuery('DELETE FROM activity_logs WHERE id = ?', [id]);
-    saveDb();
+    await saveAndSyncDb();
 
     return res.json({ success: true, message: 'Log aktivitas berhasil dihapus' });
   } catch (err: any) {
@@ -3518,11 +3568,9 @@ apiRouter.delete('/activity-logs/:id', requireAuth, (req: AuthenticatedRequest, 
 });
 
 // Clear all activity logs
-apiRouter.delete('/activity-logs', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+apiRouter.delete('/activity-logs', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     runQuery('DELETE FROM activity_logs');
-    saveDb();
-
     const ip = req.ip || req.headers['x-forwarded-for']?.toString() || '127.0.0.1';
     logActivity(
       req.user?.id || null,
@@ -3531,6 +3579,7 @@ apiRouter.delete('/activity-logs', requireAuth, (req: AuthenticatedRequest, res:
       `Riwayat seluruh log aktivitas telah dibersihkan oleh ${req.user?.full_name || 'Admin'}`,
       ip
     );
+    await saveAndSyncDb();
 
     return res.json({ success: true, message: 'Seluruh riwayat log aktivitas berhasil dibersihkan' });
   } catch (err: any) {

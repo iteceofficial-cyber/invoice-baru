@@ -178,12 +178,12 @@ export const SettingsView: React.FC = () => {
         return;
       }
 
-      // For raster images (PNG, JPG, WEBP), downscale large images safely
+      // For raster images (PNG, JPG, WEBP), downscale large images safely for letterhead ratio
       const img = new Image();
       img.onload = () => {
         try {
-          const maxW = 1600;
-          const maxH = 600;
+          const maxW = 1000;
+          const maxH = 260;
           let targetW = img.width;
           let targetH = img.height;
 
@@ -199,7 +199,8 @@ export const SettingsView: React.FC = () => {
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, targetW, targetH);
-            const optimizedDataUrl = canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.92);
+            // Compress neatly at 0.82 quality to ensure tiny payload size (< 50KB) and instant cloud sync
+            const optimizedDataUrl = canvas.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', 0.82);
             if (type === 'header') {
               setInvoice((prev) => ({ ...prev, header_image_url: optimizedDataUrl }));
               toast.success(`Gambar Kop Header (${targetW}x${targetH}px) siap! Klik "Simpan Kop Header & Footer".`);
@@ -236,12 +237,9 @@ export const SettingsView: React.FC = () => {
   const handleSaveHeaderFooter = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setSaving(true);
-    const res = await apiRequest('/api/settings/invoice', {
+    const res = await apiRequest('/api/settings/header-footer', {
       method: 'PUT',
       body: JSON.stringify({
-        ...invoice,
-        payment_methods: paymentMethods,
-        whatsapp_template: whatsappTemplate,
         header_image_url: invoice.header_image_url,
         footer_image_url: invoice.footer_image_url,
         footer_text: invoice.footer_text,
@@ -250,7 +248,16 @@ export const SettingsView: React.FC = () => {
     setSaving(false);
 
     if (res.success) {
-      toast.success('Kop Header & Footer Invoice resmi berhasil disimpan!');
+      toast.success('Kop Header & Footer Invoice resmi berhasil disimpan ke database dan disinkronkan ke Cloud Firestore!');
+      if (res.data) {
+        setInvoice((prev) => ({
+          ...prev,
+          header_image_url: res.data.header_image_url || prev.header_image_url,
+          footer_image_url: res.data.footer_image_url || prev.footer_image_url,
+          footer_text: res.data.footer_text !== undefined ? res.data.footer_text : prev.footer_text,
+        }));
+      }
+      window.dispatchEvent(new CustomEvent('database_synced'));
     } else {
       toast.error(res.message || 'Gagal menyimpan Kop Header & Footer');
     }
@@ -258,6 +265,13 @@ export const SettingsView: React.FC = () => {
 
   useEffect(() => {
     loadAllSettings();
+    const handleSync = () => loadAllSettings();
+    window.addEventListener('database_synced', handleSync);
+    window.addEventListener('focus', handleSync);
+    return () => {
+      window.removeEventListener('database_synced', handleSync);
+      window.removeEventListener('focus', handleSync);
+    };
   }, []);
 
   const loadAllSettings = async () => {
@@ -297,16 +311,8 @@ export const SettingsView: React.FC = () => {
         } catch {}
       }
 
-      // If loaded methods are missing standard default payment choices (BCA, BRI, QRIS, Cash),
-      // merge missing standard items so user can easily check/uncheck them
-      if (loadedMethods.length > 0) {
-        const existingNames = new Set(loadedMethods.map((m) => (m.name || '').toLowerCase().trim()));
-        for (const def of DEFAULT_PAYMENT_METHODS) {
-          if (!existingNames.has((def.name || '').toLowerCase().trim())) {
-            loadedMethods.push({ ...def, is_active: false });
-          }
-        }
-      } else {
+      // If no payment methods loaded at all, fallback to default payment methods
+      if (loadedMethods.length === 0) {
         loadedMethods = DEFAULT_PAYMENT_METHODS;
       }
 
@@ -424,7 +430,7 @@ export const SettingsView: React.FC = () => {
     setSaving(false);
 
     if (res.success) {
-      toast.success('Daftar metode pembayaran berhasil disimpan dan diperbarui!');
+      toast.success('Daftar metode pembayaran berhasil disimpan dan disinkronkan ke Cloud Firestore!');
       const updatedList = Array.isArray(res.data) ? res.data : paymentMethods;
       setPaymentMethods(updatedList);
       setInvoice((prev) => ({ ...prev, payment_methods: updatedList }));
@@ -433,24 +439,9 @@ export const SettingsView: React.FC = () => {
       if (compRes.success && compRes.data) {
         setCompany(compRes.data);
       }
+      window.dispatchEvent(new CustomEvent('database_synced'));
     } else {
-      // Fallback
-      setSaving(true);
-      const fallbackRes = await apiRequest('/api/settings/invoice', {
-        method: 'PUT',
-        body: JSON.stringify({
-          ...invoice,
-          payment_methods: paymentMethods,
-          whatsapp_template: whatsappTemplate,
-        }),
-      });
-      setSaving(false);
-      if (fallbackRes.success) {
-        toast.success('Daftar metode pembayaran berhasil disimpan!');
-        setInvoice((prev) => ({ ...prev, payment_methods: paymentMethods }));
-      } else {
-        toast.error(fallbackRes.message || res.message || 'Gagal menyimpan metode pembayaran');
-      }
+      toast.error(res.message || 'Gagal menyimpan metode pembayaran');
     }
   };
 

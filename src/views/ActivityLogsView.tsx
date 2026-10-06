@@ -47,7 +47,7 @@ export const ActivityLogsView: React.FC = () => {
       search,
       action: actionFilter,
       page: page.toString(),
-      limit: '15',
+      limit: '20',
     });
 
     const res = await apiRequest(`/api/activity-logs?${query.toString()}`);
@@ -66,6 +66,16 @@ export const ActivityLogsView: React.FC = () => {
   useEffect(() => {
     loadLogs();
   }, [search, actionFilter, page]);
+
+  useEffect(() => {
+    const handleSync = () => loadLogs();
+    window.addEventListener('database_synced', handleSync);
+    window.addEventListener('focus', handleSync);
+    return () => {
+      window.removeEventListener('database_synced', handleSync);
+      window.removeEventListener('focus', handleSync);
+    };
+  }, []);
 
   const handleDeleteLog = async () => {
     if (!deleteTarget) return;
@@ -190,7 +200,12 @@ export const ActivityLogsView: React.FC = () => {
             <option value="Edit Produk">Edit Produk</option>
             <option value="Import Excel Produk">Import Excel</option>
             <option value="Hapus Produk">Hapus Produk</option>
+            <option value="Tambah Pelanggan">Tambah Pelanggan</option>
+            <option value="Edit Pelanggan">Edit Pelanggan</option>
+            <option value="Hapus Pelanggan">Hapus Pelanggan</option>
             <option value="Mengubah Pengaturan">Mengubah Pengaturan</option>
+            <option value="Mengubah Metode Pembayaran">Mengubah Metode Pembayaran</option>
+            <option value="Mengubah Kop Header & Footer">Mengubah Kop Header & Footer</option>
           </select>
         </div>
       </div>
