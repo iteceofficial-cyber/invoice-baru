@@ -59,7 +59,9 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   useEffect(() => {
     if (data && isOpen) {
       setTargetPhone(data.customer_phone || '');
-      setWaMessage(buildWhatsAppInvoiceMessage(data, data.settings?.whatsapp_template));
+      const localTpl = typeof window !== 'undefined' ? localStorage.getItem('custom_wa_template') : null;
+      const effectiveTpl = data.settings?.whatsapp_template || (localTpl && localTpl.trim() ? localTpl : undefined);
+      setWaMessage(buildWhatsAppInvoiceMessage(data, effectiveTpl));
     }
   }, [data, isOpen]);
 
@@ -154,8 +156,10 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
   };
 
   const handleResetMessage = () => {
-    setWaMessage(buildWhatsAppInvoiceMessage(data, data.settings?.whatsapp_template));
-    toast.info('Pesan dikembalikan sesuai template standar');
+    const localTpl = typeof window !== 'undefined' ? localStorage.getItem('custom_wa_template') : null;
+    const effectiveTpl = data.settings?.whatsapp_template || (localTpl && localTpl.trim() ? localTpl : undefined);
+    setWaMessage(buildWhatsAppInvoiceMessage(data, effectiveTpl));
+    toast.info('Pesan disesuaikan dengan template aktif');
   };
 
   const handleConfirmDelete = () => {

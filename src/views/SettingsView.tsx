@@ -159,8 +159,14 @@ export const SettingsView: React.FC = () => {
   // Multiple payment methods state
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodItem[]>([]);
 
-  // WhatsApp template state
-  const [whatsappTemplate, setWhatsappTemplate] = useState<string>(DEFAULT_WHATSAPP_TEMPLATE);
+  // WhatsApp template state (with client-side fallback persistence)
+  const [whatsappTemplate, setWhatsappTemplate] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const cached = localStorage.getItem('custom_wa_template');
+      if (cached && cached.trim()) return cached;
+    }
+    return DEFAULT_WHATSAPP_TEMPLATE;
+  });
 
   const toast = useToast();
   const headerFileInputRef = useRef<HTMLInputElement>(null);
@@ -317,10 +323,18 @@ export const SettingsView: React.FC = () => {
         secondary_color: data.secondary_color || '#7ba892',
       });
 
-      if (data.whatsapp_template) {
+      if (data.whatsapp_template && data.whatsapp_template.trim()) {
         setWhatsappTemplate(data.whatsapp_template);
+        try {
+          localStorage.setItem('custom_wa_template', data.whatsapp_template);
+        } catch {}
       } else {
-        setWhatsappTemplate(DEFAULT_WHATSAPP_TEMPLATE);
+        const cached = typeof window !== 'undefined' ? localStorage.getItem('custom_wa_template') : null;
+        if (cached && cached.trim()) {
+          setWhatsappTemplate(cached);
+        } else {
+          setWhatsappTemplate(DEFAULT_WHATSAPP_TEMPLATE);
+        }
       }
 
       let loadedMethods: PaymentMethodItem[] = [];
@@ -648,13 +662,20 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleResetWhatsAppTemplate = () => {
+    try {
+      localStorage.removeItem('custom_wa_template');
+    } catch {}
     setWhatsappTemplate(DEFAULT_WHATSAPP_TEMPLATE);
-    toast.info('Template direset di editor. Klik "Simpan Template WhatsApp" untuk menyimpan ke database.');
+    toast.info('Template direset di editor. Klik "Simpan Template WhatsApp" untuk menerapkan.');
   };
 
   const handleSaveWhatsAppTemplate = async () => {
     setSaving(true);
     try {
+      try {
+        localStorage.setItem('custom_wa_template', whatsappTemplate);
+      } catch {}
+
       const res = await apiRequest('/api/settings/whatsapp', {
         method: 'PUT',
         body: JSON.stringify({

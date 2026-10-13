@@ -15,6 +15,8 @@ import {
   syncToFirestore,
   checkAndSyncFromFirestore,
   getCurrentDbVersion,
+  syncInvoiceSettingsToFirestore,
+  syncSingleInvoiceToFirestore,
 } from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
 import jsPDF from 'jspdf';
@@ -29,22 +31,15 @@ const upload = multer({
 export const apiRouter = express.Router();
 
 // ==========================================
-// AUTO-SYNC MIDDLEWARE ACROSS DEVICES & LINKS
+// AUTO-PERSISTENCE MIDDLEWARE
 // ==========================================
 apiRouter.use(async (req, res, next) => {
-  // 1. Sync from Cloud Firestore in background so API requests are never blocked
-  if (isCloudPersistenceActive()) {
-    checkAndSyncFromFirestore().catch((err) => {
-      console.warn('[Auto-sync Check Warning]:', err);
-    });
-  }
-
-  // 2. On successful data mutation, immediately persist to disk and trigger background cloud sync
+  // On successful data mutation, immediately persist to disk and trigger debounced cloud sync
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && !req.path.includes('/system/sync-cloud')) {
     const originalJson = res.json.bind(res);
     res.json = function (body: any) {
       if (body && body.success !== false) {
-        saveDb(true); // Persist to disk and queue background cloud sync
+        saveDb(false); // Persist to disk and queue debounced cloud sync
       }
       return originalJson(body);
     };
@@ -1384,21 +1379,31 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
 
     let invoices: any[] = [];
     if (total > 0) {
-      const dataQuery = `
-        SELECT i.*, 
-               COALESCE(COUNT(ii.id), 0) as item_count, 
-               COALESCE(SUM(ii.qty), 0) as total_qty, 
-               COALESCE(u.full_name, 'Admin') as created_by_name
-        FROM invoices i
-        LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
-        LEFT JOIN users u ON i.created_by_user_id = u.id
-        ${whereSql}
-        GROUP BY i.id
-        ORDER BY i.id DESC
-        LIMIT ? OFFSET ?
-      `;
-
-      invoices = queryAll(dataQuery, [...params, limitNum, offset]);
+      try {
+        const dataQuery = `
+          SELECT i.*, 
+                 COALESCE(COUNT(ii.id), 0) as item_count, 
+                 COALESCE(SUM(ii.qty), 0) as total_qty, 
+                 COALESCE(u.full_name, 'Admin') as created_by_name
+          FROM invoices i
+          LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
+          LEFT JOIN users u ON i.created_by_user_id = u.id
+          ${whereSql}
+          GROUP BY i.id
+          ORDER BY i.id DESC
+          LIMIT ? OFFSET ?
+        `;
+        invoices = queryAll(dataQuery, [...params, limitNum, offset]);
+      } catch (qErr) {
+        console.warn('[Warning GET /invoices dataQuery fallback]:', qErr);
+        try {
+          const fallbackQuery = `SELECT * FROM invoices i ${whereSql} ORDER BY i.id DESC LIMIT ? OFFSET ?`;
+          invoices = queryAll(fallbackQuery, [...params, limitNum, offset]);
+        } catch (fErr) {
+          console.error('[Error GET /invoices fallback failed]:', fErr);
+          invoices = [];
+        }
+      }
     }
 
     const safeInvoices = (invoices || []).map((inv: any) => ({
@@ -1427,7 +1432,18 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
     });
   } catch (err: any) {
     console.error('[Error GET /invoices]:', err);
-    return res.status(500).json({ success: false, message: 'Gagal memuat daftar invoice: ' + err.message });
+    // Return graceful empty array rather than breaking frontend UI
+    return res.json({
+      success: true,
+      data: [],
+      pagination: {
+        page: 1,
+        limit: 10,
+        total: 0,
+        totalPages: 1,
+      },
+      warning: err?.message,
+    });
   }
 });
 
@@ -2274,6 +2290,7 @@ apiRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respon
     }
 
     saveDb();
+    syncSingleInvoiceToFirestore(invoiceId).catch(() => {});
 
     logActivity(
       req.user?.id || null,
@@ -2504,6 +2521,7 @@ apiRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
     }
 
     saveDb();
+    syncSingleInvoiceToFirestore(Number(id)).catch(() => {});
 
     logActivity(
       req.user?.id || null,
@@ -3343,6 +3361,7 @@ apiRouter.put('/settings/invoice', requireAuth, async (req: AuthenticatedRequest
 
     // Save to disk immediately and trigger background Cloud Firestore sync
     saveDb(true);
+    syncInvoiceSettingsToFirestore().catch(() => {});
 
     logActivity(
       req.user?.id || null,
@@ -3391,6 +3410,7 @@ apiRouter.put('/settings/whatsapp', requireAuth, (req: AuthenticatedRequest, res
 
     // Save to disk immediately and trigger cloud sync in background
     saveDb(true);
+    syncInvoiceSettingsToFirestore().catch(() => {});
 
     logActivity(
       req.user?.id || null,
