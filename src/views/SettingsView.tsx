@@ -349,20 +349,26 @@ export const SettingsView: React.FC = () => {
   const handleSaveInvoiceSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    const res = await apiRequest('/api/settings/invoice', {
-      method: 'PUT',
-      body: JSON.stringify({
-        ...invoice,
-        payment_methods: paymentMethods,
-        whatsapp_template: whatsappTemplate,
-      }),
-    });
-    setSaving(false);
+    try {
+      const res = await apiRequest('/api/settings/invoice', {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...invoice,
+          payment_methods: paymentMethods,
+          whatsapp_template: whatsappTemplate,
+        }),
+      });
 
-    if (res.success) {
-      toast.success('Pengaturan invoice dan penomoran berhasil disimpan!');
-    } else {
-      toast.error(res.message || 'Gagal menyimpan pengaturan invoice');
+      if (res.success) {
+        window.dispatchEvent(new Event('database_synced'));
+        toast.success('Pengaturan invoice dan penomoran berhasil disimpan!');
+      } else {
+        toast.error(res.message || 'Gagal menyimpan pengaturan invoice');
+      }
+    } catch (err: any) {
+      toast.error('Gagal menyimpan: ' + (err?.message || 'Koneksi terputus'));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -454,25 +460,33 @@ export const SettingsView: React.FC = () => {
 
   const handleResetWhatsAppTemplate = () => {
     setWhatsappTemplate(DEFAULT_WHATSAPP_TEMPLATE);
-    toast.info('Template pesan WhatsApp direset ke standar resmi');
+    toast.info('Template direset di editor. Klik "Simpan Template WhatsApp" untuk menyimpan ke database.');
   };
 
   const handleSaveWhatsAppTemplate = async () => {
     setSaving(true);
-    const res = await apiRequest('/api/settings/invoice', {
-      method: 'PUT',
-      body: JSON.stringify({
-        ...invoice,
-        payment_methods: paymentMethods,
-        whatsapp_template: whatsappTemplate,
-      }),
-    });
-    setSaving(false);
+    try {
+      const res = await apiRequest('/api/settings/whatsapp', {
+        method: 'PUT',
+        body: JSON.stringify({
+          whatsapp_template: whatsappTemplate,
+        }),
+      });
 
-    if (res.success) {
-      toast.success('Template pesan WhatsApp pelanggan berhasil disimpan!');
-    } else {
-      toast.error(res.message || 'Gagal menyimpan template WhatsApp');
+      if (res.success) {
+        setInvoice((prev) => ({
+          ...prev,
+          whatsapp_template: whatsappTemplate,
+        }));
+        window.dispatchEvent(new Event('database_synced'));
+        toast.success('Template pesan WhatsApp pelanggan berhasil disimpan!');
+      } else {
+        toast.error(res.message || 'Gagal menyimpan template WhatsApp');
+      }
+    } catch (err: any) {
+      toast.error('Gagal menyimpan template: ' + (err?.message || 'Koneksi terputus'));
+    } finally {
+      setSaving(false);
     }
   };
 

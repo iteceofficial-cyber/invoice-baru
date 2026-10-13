@@ -32,11 +32,17 @@ export const apiRouter = express.Router();
 // AUTO-SYNC MIDDLEWARE ACROSS DEVICES & LINKS
 // ==========================================
 apiRouter.use(async (req, res, next) => {
-  // 1. Sync from Cloud Firestore if a newer cloud snapshot exists
-  try {
-    await checkAndSyncFromFirestore();
-  } catch (err) {
-    console.warn('[Auto-sync Check Warning]:', err);
+  // 1. Sync from Cloud Firestore (background check on GET so read queries are instant)
+  if (req.method === 'GET') {
+    checkAndSyncFromFirestore().catch((err) => {
+      console.warn('[Auto-sync Check Warning]:', err);
+    });
+  } else {
+    try {
+      await checkAndSyncFromFirestore();
+    } catch (err) {
+      console.warn('[Auto-sync Check Warning]:', err);
+    }
   }
 
   // 2. On successful data mutation, immediately ensure cloud sync triggers
@@ -1341,46 +1347,52 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
   try {
     const { search, status, start_date, end_date, customer_id, page = '1', limit = '10' } = req.query;
 
-    const pageNum = Math.max(1, parseInt(page as string) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string) || 10));
-    const offset = (pageNum - 1) * limitNum;
+    const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
+    const limitNum = Math.min(2000, Math.max(1, parseInt(limit as string, 10) || 10));
+    const offset = Math.max(0, (pageNum - 1) * limitNum);
 
     let whereClauses: string[] = [];
     let params: any[] = [];
 
-    if (search) {
+    if (search && typeof search === 'string' && search.trim()) {
       whereClauses.push('(i.invoice_number LIKE ? OR i.customer_name LIKE ? OR i.customer_address LIKE ?)');
-      const s = `%${(search as string).trim()}%`;
+      const s = `%${search.trim()}%`;
       params.push(s, s, s);
     }
 
-    if (status && status !== 'all') {
+    if (status && status !== 'all' && typeof status === 'string' && status.trim()) {
       whereClauses.push('i.status = ?');
-      params.push(status);
+      params.push(status.trim());
     }
 
-    if (start_date) {
+    if (start_date && typeof start_date === 'string' && start_date.trim()) {
       whereClauses.push('i.activity_date >= ?');
-      params.push(start_date);
+      params.push(start_date.trim());
     }
 
-    if (end_date) {
+    if (end_date && typeof end_date === 'string' && end_date.trim()) {
       whereClauses.push('i.activity_date <= ?');
-      params.push(end_date);
+      params.push(end_date.trim());
     }
 
-    if (customer_id) {
-      whereClauses.push('i.customer_id = ?');
-      params.push(customer_id);
+    if (customer_id && customer_id !== 'all') {
+      const cId = parseInt(customer_id as string, 10);
+      if (!isNaN(cId)) {
+        whereClauses.push('i.customer_id = ?');
+        params.push(cId);
+      }
     }
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
     const countRow = queryOne<{ total: number }>(`SELECT COUNT(*) as total FROM invoices i ${whereSql}`, params);
-    const total = countRow?.total || 0;
+    const total = Number(countRow?.total) || 0;
 
     const dataQuery = `
-      SELECT i.*, COUNT(ii.id) as item_count, SUM(ii.qty) as total_qty, u.full_name as created_by_name
+      SELECT i.*, 
+             COALESCE(COUNT(ii.id), 0) as item_count, 
+             COALESCE(SUM(ii.qty), 0) as total_qty, 
+             COALESCE(u.full_name, 'Admin') as created_by_name
       FROM invoices i
       LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
       LEFT JOIN users u ON i.created_by_user_id = u.id
@@ -1392,17 +1404,32 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
 
     const invoices = queryAll(dataQuery, [...params, limitNum, offset]);
 
+    const safeInvoices = (invoices || []).map((inv: any) => ({
+      ...inv,
+      id: Number(inv.id),
+      subtotal: Number(inv.subtotal) || 0,
+      discount_amount: Number(inv.discount_amount) || 0,
+      tax_amount: Number(inv.tax_amount) || 0,
+      total_amount: Number(inv.total_amount) || 0,
+      item_count: Number(inv.item_count) || 0,
+      total_qty: Number(inv.total_qty) || 0,
+      customer_name: inv.customer_name || 'Pelanggan',
+      invoice_number: inv.invoice_number || `INV-${inv.id}`,
+      status: inv.status || 'paid',
+    }));
+
     return res.json({
       success: true,
-      data: invoices,
+      data: safeInvoices,
       pagination: {
         page: pageNum,
         limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limitNum),
+        totalPages: Math.max(1, Math.ceil(total / limitNum)),
       },
     });
   } catch (err: any) {
+    console.error('[Error GET /invoices]:', err);
     return res.status(500).json({ success: false, message: 'Gagal memuat daftar invoice: ' + err.message });
   }
 });
@@ -1425,6 +1452,16 @@ function resolveInvoicePaymentMethods(invoice: any, settings: any, company: any)
   // Active payment methods checked in Pengaturan
   const activeMethods = configuredPaymentMethods.filter((m: any) => m && m.is_active);
   let finalMethods = activeMethods.length > 0 ? [...activeMethods] : [...configuredPaymentMethods];
+
+  // If specific invoice has saved custom payment methods, prioritize them
+  if (invoice?.payment_methods) {
+    try {
+      const parsed = typeof invoice.payment_methods === 'string' ? JSON.parse(invoice.payment_methods) : invoice.payment_methods;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        finalMethods = parsed;
+      }
+    } catch {}
+  }
 
   // If invoice has a custom specific bank entered that is not dummy and not already in active methods, include it at the top
   if (invoice?.bank_name?.trim() && invoice?.bank_account_no?.trim()) {
@@ -1678,7 +1715,7 @@ function generateServerInvoicePdf(data: any): Buffer {
   const tableBody = (data.items || []).map((item: any, idx: number) => [
     idx + 1,
     item.product_name,
-    `${item.qty} ${item.unit || 'Pcs'}`,
+    item.qty,
     formatRupiah(item.price),
     formatRupiah(item.subtotal),
   ]);
@@ -2995,7 +3032,7 @@ apiRouter.get('/settings/public', (_req: Request, res: Response) => {
       data: {
         company_name: company?.company_name || 'Info Papandayan',
         app_name: invoice?.app_name || 'Info Papandayan - Invoice & Logistik',
-        logo_url: company?.logo_url || '/invoice-header.svg',
+        logo_url: company?.logo_url || '',
         header_image_url: invoice?.header_image_url || '/invoice-header.svg',
         footer_image_url: invoice?.footer_image_url || '/invoice-footer.svg',
         primary_color: invoice?.primary_color || '#136239',
@@ -3029,6 +3066,7 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
     const finalBankAcc = bank_account_no !== undefined ? bank_account_no?.trim() : (currentComp?.bank_account_no || '');
     const finalBankName = bank_name !== undefined ? bank_name?.trim() : (currentComp?.bank_name || '');
     const finalBankOwner = bank_account_name !== undefined ? bank_account_name?.trim() : (currentComp?.bank_account_name || '');
+    const finalLogoUrl = logo_url !== undefined ? (logo_url || '').trim() : (currentComp?.logo_url || '');
 
     runQuery(
       `UPDATE company_settings
@@ -3037,7 +3075,7 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
        WHERE id = 1`,
       [
         company_name.trim(),
-        logo_url || '',
+        finalLogoUrl,
         address?.trim() || '',
         phone?.trim() || '',
         email?.trim() || '',
@@ -3048,6 +3086,8 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
       ]
     );
 
+    saveDb(true);
+
     logActivity(
       req.user?.id || null,
       req.user?.username || 'admin',
@@ -3056,9 +3096,50 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
       req.ip
     );
 
-    return res.json({ success: true, message: 'Informasi perusahaan berhasil diperbarui' });
+    return res.json({
+      success: true,
+      message: 'Informasi perusahaan dan logo berhasil diperbarui!',
+      data: {
+        logo_url: finalLogoUrl,
+      },
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal menyimpan pengaturan perusahaan: ' + err.message });
+  }
+});
+
+// Dedicated route to update App & Company Logo specifically
+apiRouter.put('/settings/logo', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { logo_url } = req.body;
+    const finalLogo = typeof logo_url === 'string' ? logo_url.trim() : '';
+
+    runQuery(
+      `UPDATE company_settings
+       SET logo_url = ?, updated_at = datetime('now', 'localtime')
+       WHERE id = 1`,
+      [finalLogo]
+    );
+
+    saveDb(true);
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Mengubah Pengaturan',
+      finalLogo ? 'Memperbarui logo aplikasi dan profil usaha' : 'Mereset logo aplikasi ke logo bawaan',
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: finalLogo ? 'Logo aplikasi dan usaha berhasil diperbarui!' : 'Logo berhasil direset ke logo bawaan!',
+      data: {
+        logo_url: finalLogo,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal memperbarui logo: ' + err.message });
   }
 });
 
@@ -3179,8 +3260,8 @@ apiRouter.put('/settings/invoice', requireAuth, async (req: AuthenticatedRequest
       ]
     );
 
-    // Ensure Cloud Firestore is 100% updated before sending response
-    await saveAndSyncDb();
+    // Save to disk immediately and trigger background Cloud Firestore sync
+    saveDb(true);
 
     logActivity(
       req.user?.id || null,
@@ -3207,6 +3288,47 @@ apiRouter.put('/settings/invoice', requireAuth, async (req: AuthenticatedRequest
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal menyimpan pengaturan invoice: ' + err.message });
+  }
+});
+
+// Dedicated route to update Customer WhatsApp Chat Template specifically (fast, reliable, isolated)
+apiRouter.put('/settings/whatsapp', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { whatsapp_template } = req.body;
+    if (whatsapp_template === undefined || whatsapp_template === null) {
+      return res.status(400).json({ success: false, message: 'Template pesan WhatsApp tidak boleh kosong' });
+    }
+
+    const templateToSave = String(whatsapp_template).trim() || DEFAULT_WHATSAPP_TEMPLATE;
+
+    runQuery(
+      `UPDATE invoice_settings
+       SET whatsapp_template = ?, updated_at = datetime('now', 'localtime')
+       WHERE id = 1`,
+      [templateToSave]
+    );
+
+    // Save to disk immediately and trigger cloud sync in background
+    saveDb(true);
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Mengubah Pengaturan',
+      'Memperbarui template pesan WhatsApp pelanggan',
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      message: 'Template pesan WhatsApp pelanggan berhasil disimpan ke database & cloud!',
+      data: {
+        whatsapp_template: templateToSave,
+      },
+    });
+  } catch (err: any) {
+    console.error('[Error PUT /settings/whatsapp]:', err);
+    return res.status(500).json({ success: false, message: 'Gagal menyimpan template WhatsApp: ' + err.message });
   }
 });
 

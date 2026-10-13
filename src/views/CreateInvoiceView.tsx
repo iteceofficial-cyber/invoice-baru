@@ -12,6 +12,7 @@ import {
   Calculator,
   RotateCcw,
   Sparkles,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, terbilang } from '../lib/utils.ts';
@@ -19,6 +20,7 @@ import { useToast } from '../context/ToastContext.tsx';
 import { InvoicePreviewModal } from './InvoicePreviewModal.tsx';
 import { NavTab } from '../components/Sidebar.tsx';
 import { generateInvoicePDF, InvoicePDFData } from '../lib/pdfGenerator.ts';
+import { exportSingleInvoiceExcel } from '../lib/excelHelper.ts';
 
 interface InvoiceItemForm {
   id?: number;
@@ -595,6 +597,19 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              exportSingleInvoiceExcel(getPreviewData());
+              toast.success('Draft invoice berhasil diekspor ke Excel (.xlsx)!');
+            }}
+            title="Download draft invoice ke file Excel (.xlsx) dengan kolom Qty tanpa satuan"
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 text-[#136239] text-xs font-bold shadow-xs transition cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-[#136239]" />
+            <span>Draft Excel</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setIsPreviewOpen(true)}

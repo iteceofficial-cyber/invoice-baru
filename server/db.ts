@@ -457,6 +457,7 @@ export async function getDb(): Promise<Database> {
   }
 
   // 2. SECOND PRIORITY: If Cloud was empty/unavailable, load local disk DB
+  let loadedFromDisk = false;
   if (!dbInstance) {
     const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
     if (targetFile) {
@@ -466,6 +467,7 @@ export async function getDb(): Promise<Database> {
         const check = testDb.exec('PRAGMA integrity_check;');
         if (check[0]?.values[0]?.[0] === 'ok') {
           dbInstance = testDb;
+          loadedFromDisk = true;
           // Set version to 0 so any active cloud snapshot will supersede it automatically
           currentDbVersion = 0;
           console.log('[Database] Menggunakan basis data lokal terverifikasi sehat:', targetFile);
@@ -476,6 +478,8 @@ export async function getDb(): Promise<Database> {
     }
   }
 
+  const isBrandNewDb = !loadedFromCloud && !loadedFromDisk;
+
   // 3. THIRD PRIORITY: Fallback to fresh DB
   if (!dbInstance) {
     dbInstance = new SQL.Database();
@@ -484,7 +488,7 @@ export async function getDb(): Promise<Database> {
 
   // Enable foreign keys
   dbInstance.run('PRAGMA foreign_keys = ON;');
-  initSchemaAndSeed(dbInstance);
+  initSchemaAndSeed(dbInstance, isBrandNewDb);
 
   // SAFE SEEDING: ONLY seed Cloud Firestore if Cloud Firestore NEVER had data before (empty project)
   // NEVER overwrite existing Cloud Firestore data if cloudMetaAlreadyExists is true!
@@ -536,17 +540,53 @@ export async function saveAndSyncDb(): Promise<void> {
   await syncToFirestore();
 }
 
-// Helper to execute select queries and return array of objects
+// Helper to execute select queries and return array of objects safely
 export function queryAll<T = any>(sql: string, params: any[] = []): T[] {
   if (!dbInstance) throw new Error('Database not initialized');
-  const stmt = dbInstance.prepare(sql);
-  stmt.bind(params);
-  const results: T[] = [];
-  while (stmt.step()) {
-    results.push(stmt.getAsObject() as T);
+  let stmt: any = null;
+  try {
+    stmt = dbInstance.prepare(sql);
+    stmt.bind(params);
+    const results: T[] = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as T);
+    }
+    return results;
+  } catch (err: any) {
+    if (err?.message?.includes('malformed') || err?.message?.includes('corrupt')) {
+      console.error('[Database CRITICAL] Deteksi database malformed saat queryAll, memulihkan dari disk...');
+      const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+      if (targetFile && sqlJsEngine) {
+        const fileBuffer = fs.readFileSync(targetFile);
+        const recoveredDb = new sqlJsEngine.Database(fileBuffer);
+        const check = recoveredDb.exec('PRAGMA integrity_check;');
+        if (check[0]?.values[0]?.[0] === 'ok') {
+          dbInstance = recoveredDb;
+          let retryStmt: any = null;
+          try {
+            retryStmt = recoveredDb.prepare(sql);
+            retryStmt.bind(params);
+            const retryResults: T[] = [];
+            while (retryStmt.step()) {
+              retryResults.push(retryStmt.getAsObject() as T);
+            }
+            return retryResults;
+          } finally {
+            if (retryStmt) {
+              try { retryStmt.free(); } catch (e) {}
+            }
+          }
+        }
+      }
+    }
+    throw err;
+  } finally {
+    if (stmt) {
+      try {
+        stmt.free();
+      } catch (e) {}
+    }
   }
-  stmt.free();
-  return results;
 }
 
 // Helper to execute single row query
@@ -592,7 +632,7 @@ export function runQuery(sql: string, params: any[] = []): { lastInsertRowId: nu
   return { lastInsertRowId, changes };
 }
 
-function initSchemaAndSeed(db: Database) {
+function initSchemaAndSeed(db: Database, isBrandNewDb: boolean = false) {
   // 1. Roles table
   db.run(`
     CREATE TABLE IF NOT EXISTS roles (
@@ -773,21 +813,6 @@ function initSchemaAndSeed(db: Database) {
     db.run(`ALTER TABLE invoices ADD COLUMN payment_methods TEXT;`);
   } catch (e) {}
 
-  // Update existing template to include {link_pdf} if not already present
-  try {
-    const currentTplRow = db.exec(`SELECT whatsapp_template FROM invoice_settings WHERE id = 1;`);
-    const currentTpl = currentTplRow[0]?.values[0]?.[0] as string | undefined;
-    if (currentTpl && !currentTpl.includes('{link_pdf}')) {
-      const updatedTpl = currentTpl.replace(
-        /\{link_download\}/g,
-        `{link_download}\n\n📥 *Unduh Langsung File PDF Resmi:*\n{link_pdf}`
-      );
-      const stmt = db.prepare(`UPDATE invoice_settings SET whatsapp_template = ? WHERE id = 1;`);
-      stmt.run([updatedTpl]);
-      stmt.free();
-    }
-  } catch (e) {}
-
   // 10. Activity logs table
   db.run(`
     CREATE TABLE IF NOT EXISTS activity_logs (
@@ -897,10 +922,10 @@ function initSchemaAndSeed(db: Database) {
     }
   }
 
-  // Seed categories if empty
+  // Seed categories if brand new and empty
   const catCheck = db.exec('SELECT COUNT(*) as cnt FROM categories;');
   const catCount = (catCheck[0]?.values[0]?.[0] as number) || 0;
-  if (catCount === 0) {
+  if (isBrandNewDb && catCount === 0) {
     db.run(`
       INSERT INTO categories (id, name, description) VALUES
       (1, 'Elektronik & IT', 'Perangkat keras komputer, server, dan aksesoris teknologi'),
@@ -911,10 +936,10 @@ function initSchemaAndSeed(db: Database) {
     `);
   }
 
-  // Seed products if empty
+  // Seed products if brand new and empty
   const prodCheck = db.exec('SELECT COUNT(*) as cnt FROM products;');
   const prodCount = (prodCheck[0]?.values[0]?.[0] as number) || 0;
-  if (prodCount === 0) {
+  if (isBrandNewDb && prodCount === 0) {
     db.run(`
       INSERT INTO products (id, code, name, category_id, unit, price, stock, status, description) VALUES
       (1, 'PRD-001', 'Laptop Asus ExpertBook B1400 14" i5 16GB/512GB', 1, 'Unit', 12500000, 18, 'active', 'Laptop bisnis tangguh spesifikasi Intel Core i5 gen 11'),
@@ -930,10 +955,10 @@ function initSchemaAndSeed(db: Database) {
     `);
   }
 
-  // Seed customers if empty
+  // Seed customers if brand new and empty
   const custCheck = db.exec('SELECT COUNT(*) as cnt FROM customers;');
   const custCount = (custCheck[0]?.values[0]?.[0] as number) || 0;
-  if (custCount === 0) {
+  if (isBrandNewDb && custCount === 0) {
     db.run(`
       INSERT INTO customers (id, name, address, phone, email, notes) VALUES
       (1, 'PT Megah Karya Nusantara', 'Wisma BNI 46 Lt. 18, Jl. Jend. Sudirman Kav. 1, Jakarta Pusat', '021-5748899', 'procurement@megahkarya.co.id', 'Klien korporat langganan kontrak IT maintenance bulanan'),
@@ -944,137 +969,141 @@ function initSchemaAndSeed(db: Database) {
     `);
   }
 
-  // Seed sample invoices and items if empty
+  // Seed sample invoices and items only on brand new databases
   const invCheck = db.exec('SELECT COUNT(*) as cnt FROM invoices;');
   const invCount = (invCheck[0]?.values[0]?.[0] as number) || 0;
-  if (invCount === 0) {
-    const curYear = new Date().getFullYear();
-    const curMonth = String(new Date().getMonth() + 1).padStart(2, '0');
+  if (isBrandNewDb && invCount === 0) {
+    try {
+      const curYear = new Date().getFullYear();
+      const curMonth = String(new Date().getMonth() + 1).padStart(2, '0');
 
-    // Invoice 1
-    db.run(`
-      INSERT INTO invoices (
-        id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
-        activity_date, due_date, bank_account_no, bank_name, bank_account_name,
-        notes, subtotal, discount_type, discount_rate, discount_amount,
-        tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
-      ) VALUES (
-        1,
-        'INV/${curYear}/${curMonth}/0001',
-        1,
-        'PT Megah Karya Nusantara',
-        'Wisma BNI 46 Lt. 18, Jl. Jend. Sudirman Kav. 1, Jakarta Pusat',
-        '021-5748899',
-        '${curYear}-${curMonth}-02',
-        '${curYear}-${curMonth}-16',
-        '131-00-1849201-8',
-        'Bank Mandiri KCP Garut',
-        'Info Papandayan',
-        'Pengadaan perangkat IT dan jaringan untuk lantai 18.',
-        37500000,
-        'percent',
-        5,
-        1875000,
-        11,
-        3918750,
-        39543750,
-        'paid',
-        1,
-        '${curYear}-${curMonth}-02 10:15:00'
-      );
-    `);
+      // Invoice 1
+      db.run(`
+        INSERT INTO invoices (
+          id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+          activity_date, due_date, bank_account_no, bank_name, bank_account_name,
+          notes, subtotal, discount_type, discount_rate, discount_amount,
+          tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
+        ) VALUES (
+          1,
+          'INV/${curYear}/${curMonth}/0001',
+          1,
+          'PT Megah Karya Nusantara',
+          'Wisma BNI 46 Lt. 18, Jl. Jend. Sudirman Kav. 1, Jakarta Pusat',
+          '021-5748899',
+          '${curYear}-${curMonth}-02',
+          '${curYear}-${curMonth}-16',
+          '131-00-1849201-8',
+          'Bank Mandiri KCP Garut',
+          'Info Papandayan',
+          'Pengadaan perangkat IT dan jaringan untuk lantai 18.',
+          37500000,
+          'percent',
+          5,
+          1875000,
+          11,
+          3918750,
+          39543750,
+          'paid',
+          1,
+          '${curYear}-${curMonth}-02 10:15:00'
+        );
+      `);
 
-    db.run(`
-      INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
-      (1, 1, 'PRD-001', 'Laptop Asus ExpertBook B1400 14" i5 16GB/512GB', 2, 'Unit', 12500000, 25000000),
-      (1, 4, 'PRD-004', 'Managed Switch Cisco Catalyst CBS250 24-Port GE PoE', 1, 'Unit', 8900000, 8900000),
-      (1, 3, 'PRD-003', 'Wireless Router Mikrotik RB4011iGS+RM Gigabit', 1, 'Unit', 3600000, 3600000);
-    `);
+      db.run(`
+        INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
+        (1, 1, 'PRD-001', 'Laptop Asus ExpertBook B1400 14" i5 16GB/512GB', 2, 'Unit', 12500000, 25000000),
+        (1, 4, 'PRD-004', 'Managed Switch Cisco Catalyst CBS250 24-Port GE PoE', 1, 'Unit', 8900000, 8900000),
+        (1, 3, 'PRD-003', 'Wireless Router Mikrotik RB4011iGS+RM Gigabit', 1, 'Unit', 3600000, 3600000);
+      `);
 
-    // Invoice 2
-    db.run(`
-      INSERT INTO invoices (
-        id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
-        activity_date, due_date, bank_account_no, bank_name, bank_account_name,
-        notes, subtotal, discount_type, discount_rate, discount_amount,
-        tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
-      ) VALUES (
-        2,
-        'INV/${curYear}/${curMonth}/0002',
-        4,
-        'PT Indo Finansial Solusi',
-        'Pacific Place Office Tower Lt. 9, SCBD, Jakarta Selatan',
-        '021-25556789',
-        '${curYear}-${curMonth}-03',
-        '${curYear}-${curMonth}-17',
-        '131-00-1849201-8',
-        'Bank Mandiri KCP Garut',
-        'Info Papandayan',
-        'Perlengkapan monitor display workstation tim engineer.',
-        13750000,
-        'fixed',
-        0,
-        0,
-        11,
-        1512500,
-        15262500,
-        'paid',
-        1,
-        '${curYear}-${curMonth}-03 14:30:00'
-      );
-    `);
+      // Invoice 2
+      db.run(`
+        INSERT INTO invoices (
+          id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+          activity_date, due_date, bank_account_no, bank_name, bank_account_name,
+          notes, subtotal, discount_type, discount_rate, discount_amount,
+          tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
+        ) VALUES (
+          2,
+          'INV/${curYear}/${curMonth}/0002',
+          4,
+          'PT Indo Finansial Solusi',
+          'Pacific Place Office Tower Lt. 9, SCBD, Jakarta Selatan',
+          '021-25556789',
+          '${curYear}-${curMonth}-03',
+          '${curYear}-${curMonth}-17',
+          '131-00-1849201-8',
+          'Bank Mandiri KCP Garut',
+          'Info Papandayan',
+          'Perlengkapan monitor display workstation tim engineer.',
+          13750000,
+          'fixed',
+          0,
+          0,
+          11,
+          1512500,
+          15262500,
+          'paid',
+          1,
+          '${curYear}-${curMonth}-03 14:30:00'
+        );
+      `);
 
-    db.run(`
-      INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
-      (2, 2, 'PRD-002', 'Monitor Dell Professional 24" P2422H IPS FHD', 5, 'Unit', 2750000, 13750000);
-    `);
+      db.run(`
+        INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
+        (2, 2, 'PRD-002', 'Monitor Dell Professional 24" P2422H IPS FHD', 5, 'Unit', 2750000, 13750000);
+      `);
 
-    // Invoice 3
-    db.run(`
-      INSERT INTO invoices (
-        id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
-        activity_date, due_date, bank_account_no, bank_name, bank_account_name,
-        notes, subtotal, discount_type, discount_rate, discount_amount,
-        tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
-      ) VALUES (
-        3,
-        'INV/${curYear}/${curMonth}/0003',
-        2,
-        'CV Mitra Mandiri Solusindo',
-        'Ruko Sentra Niaga Blok B No. 12, Jl. Pemuda, Surabaya',
-        '031-8499211',
-        '${curYear}-${curMonth}-04',
-        '${curYear}-${curMonth}-20',
-        '131-00-1849201-8',
-        'Bank Mandiri KCP Garut',
-        'Info Papandayan',
-        'Order roll kabel UTP dan consumable toner printer.',
-        11720000,
-        'fixed',
-        0,
-        220000,
-        11,
-        1265000,
-        12765000,
-        'pending',
-        2,
-        '${curYear}-${curMonth}-04 09:20:00'
-      );
-    `);
+      // Invoice 3
+      db.run(`
+        INSERT INTO invoices (
+          id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+          activity_date, due_date, bank_account_no, bank_name, bank_account_name,
+          notes, subtotal, discount_type, discount_rate, discount_amount,
+          tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at
+        ) VALUES (
+          3,
+          'INV/${curYear}/${curMonth}/0003',
+          2,
+          'CV Mitra Mandiri Solusindo',
+          'Ruko Sentra Niaga Blok B No. 12, Jl. Pemuda, Surabaya',
+          '031-8499211',
+          '${curYear}-${curMonth}-04',
+          '${curYear}-${curMonth}-20',
+          '131-00-1849201-8',
+          'Bank Mandiri KCP Garut',
+          'Info Papandayan',
+          'Order roll kabel UTP dan consumable toner printer.',
+          11720000,
+          'fixed',
+          0,
+          220000,
+          11,
+          1265000,
+          12765000,
+          'pending',
+          2,
+          '${curYear}-${curMonth}-04 09:20:00'
+        );
+      `);
 
-    db.run(`
-      INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
-      (3, 5, 'PRD-005', 'Kabel UTP Cat6 Belden Original 305 Meter', 4, 'Roll', 2450000, 9800000),
-      (3, 8, 'PRD-008', 'Toner HP LaserJet Original 85A (CE285A) Black', 2, 'Pcs', 980000, 1960000);
-    `);
+      db.run(`
+        INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal) VALUES
+        (3, 5, 'PRD-005', 'Kabel UTP Cat6 Belden Original 305 Meter', 4, 'Roll', 2450000, 9800000),
+        (3, 8, 'PRD-008', 'Toner HP LaserJet Original 85A (CE285A) Black', 2, 'Pcs', 980000, 1960000);
+      `);
 
-    // Seed activity logs
-    db.run(`
-      INSERT INTO activity_logs (user_id, username, action, details, ip_address, created_at) VALUES
-      (1, 'admin', 'Login', 'Admin masuk ke sistem', '127.0.0.1', '${curYear}-${curMonth}-01 08:30:00'),
-      (1, 'admin', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0001 (PT Megah Karya Nusantara)', '127.0.0.1', '${curYear}-${curMonth}-02 10:15:00'),
-      (1, 'admin', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0002 (PT Indo Finansial Solusi)', '127.0.0.1', '${curYear}-${curMonth}-03 14:30:00'),
-      (2, 'staff', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0003 (CV Mitra Mandiri Solusindo)', '127.0.0.1', '${curYear}-${curMonth}-04 09:20:00');
-    `);
+      // Seed activity logs
+      db.run(`
+        INSERT INTO activity_logs (user_id, username, action, details, ip_address, created_at) VALUES
+        (1, 'admin', 'Login', 'Admin masuk ke sistem', '127.0.0.1', '${curYear}-${curMonth}-01 08:30:00'),
+        (1, 'admin', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0001 (PT Megah Karya Nusantara)', '127.0.0.1', '${curYear}-${curMonth}-02 10:15:00'),
+        (1, 'admin', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0002 (PT Indo Finansial Solusi)', '127.0.0.1', '${curYear}-${curMonth}-03 14:30:00'),
+        (2, 'staff', 'Buat Invoice', 'Membuat Invoice No INV/${curYear}/${curMonth}/0003 (CV Mitra Mandiri Solusindo)', '127.0.0.1', '${curYear}-${curMonth}-04 09:20:00');
+      `);
+    } catch (seedErr) {
+      console.warn('[Database Seed] Skipping sample invoice insertion:', seedErr);
+    }
   }
 }

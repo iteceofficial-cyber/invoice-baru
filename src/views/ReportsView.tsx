@@ -597,7 +597,7 @@ export const ReportsView: React.FC = () => {
                       {it.nama_barang}
                     </td>
                     <td className="py-3 px-4 text-center font-bold text-slate-900 whitespace-nowrap">
-                      {formatNumber(it.jumlah)} {it.satuan}
+                      {formatNumber(it.jumlah)}
                     </td>
                     <td className="py-3 px-4 text-right font-mono text-slate-600 whitespace-nowrap">
                       {formatRupiah(it.harga)}

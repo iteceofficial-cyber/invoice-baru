@@ -334,7 +334,7 @@ export async function generateInvoicePDF(data: InvoicePDFData, action: 'download
     ? rawItems.map((item, index) => [
         index + 1,
         item.product_name || 'Barang',
-        `${item.qty || 1} ${item.unit || 'Pcs'}`,
+        item.qty || 1,
         formatRupiah(item.price || 0),
         formatRupiah(item.subtotal || 0),
       ])
@@ -603,7 +603,7 @@ export async function generateInvoicePDFBlob(data: InvoicePDFData): Promise<{ bl
     ? rawItems.map((it, idx) => [
         idx + 1,
         it.product_name || 'Barang',
-        `${it.qty || 1} ${it.unit || 'Pcs'}`,
+        it.qty || 1,
         formatRupiah(it.price || 0),
         formatRupiah(it.subtotal || 0),
       ])
@@ -888,14 +888,6 @@ export function buildWhatsAppInvoiceMessage(
   const defaultTemplate = DEFAULT_WHATSAPP_TEMPLATE;
 
   let template = templateOverride || data.settings?.whatsapp_template || defaultTemplate;
-
-  // If custom template doesn't include {link_pdf}, intelligently add it below {link_download}
-  if (!template.includes('{link_pdf}') && !template.includes(directPdfLink)) {
-    template = template.replace(
-      /\{link_download\}/g,
-      `{link_download}\n\n📥 *Unduh Langsung File PDF Resmi (Klik untuk Download):*\n{link_pdf}`
-    );
-  }
 
   const notesText = data.notes ? `📝 *Catatan:* ${data.notes}` : '';
 

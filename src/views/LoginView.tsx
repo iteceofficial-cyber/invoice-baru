@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Building2, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, FileText, Search } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 
 interface LoginViewProps {
   onOpenPublicInvoice?: (identifier: string) => void;
+  logoUrl?: string;
+  companyName?: string;
 }
 
-export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicInvoice }) => {
+export const LoginView: React.FC<LoginViewProps> = ({
+  onOpenPublicInvoice,
+  logoUrl: propLogoUrl,
+  companyName: propCompanyName,
+}) => {
   const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -15,6 +21,39 @@ export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicInvoice }) => 
   const [errorMessage, setErrorMessage] = useState('');
   const [publicSearchNo, setPublicSearchNo] = useState('');
   const [activeTab, setActiveTab] = useState<'admin' | 'public'>('admin');
+
+  // Dynamic branding state (fetched from public settings or props)
+  const [logoUrl, setLogoUrl] = useState<string>(propLogoUrl || '');
+  const [companyName, setCompanyName] = useState<string>(propCompanyName || 'Info Papandayan');
+  const [logoLoadError, setLogoLoadError] = useState(false);
+
+  useEffect(() => {
+    if (propLogoUrl !== undefined) {
+      setLogoUrl(propLogoUrl);
+      setLogoLoadError(false);
+    }
+  }, [propLogoUrl]);
+
+  useEffect(() => {
+    if (propCompanyName !== undefined) {
+      setCompanyName(propCompanyName);
+    }
+  }, [propCompanyName]);
+
+  useEffect(() => {
+    // Load public branding if not passed as props
+    if (!propLogoUrl && !propCompanyName) {
+      fetch('/api/settings/public')
+        .then((res) => res.json())
+        .then((res) => {
+          if (res.success && res.data) {
+            if (res.data.logo_url) setLogoUrl(res.data.logo_url);
+            if (res.data.company_name) setCompanyName(res.data.company_name);
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   const handlePublicSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,11 +94,20 @@ export const LoginView: React.FC<LoginViewProps> = ({ onOpenPublicInvoice }) => 
       <div className="w-full max-w-md z-10">
         {/* Brand header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#136239] text-white shadow-xl shadow-emerald-950/50 mb-3 ring-8 ring-emerald-500/10">
-            <Building2 className="w-7 h-7" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#136239] text-white shadow-xl shadow-emerald-950/50 mb-3 ring-8 ring-emerald-500/10 overflow-hidden p-2">
+            {logoUrl && !logoLoadError ? (
+              <img
+                src={logoUrl}
+                alt={companyName}
+                className="w-full h-full object-contain"
+                onError={() => setLogoLoadError(true)}
+              />
+            ) : (
+              <Building2 className="w-8 h-8 text-white" />
+            )}
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            Info Papandayan
+            {companyName}
           </h1>
           <p className="text-emerald-400 text-xs font-bold uppercase tracking-widest mt-1">
             Sistem Invoice & Logistik Terpadu

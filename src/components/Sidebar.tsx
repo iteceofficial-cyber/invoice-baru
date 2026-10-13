@@ -34,6 +34,7 @@ interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
   appName?: string;
+  logoUrl?: string;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -42,8 +43,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   onClose,
   appName = 'Info Papandayan',
+  logoUrl,
 }) => {
   const { user, logout, isSuperAdmin } = useAuth();
+  const [logoLoadError, setLogoLoadError] = React.useState(false);
+
+  React.useEffect(() => {
+    setLogoLoadError(false);
+  }, [logoUrl]);
 
   const navItems = [
     { id: 'dashboard' as NavTab, label: 'Dashboard', icon: LayoutDashboard },
@@ -84,8 +91,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Brand header */}
         <div className="h-18 px-6 flex items-center justify-between border-b border-slate-800/80 shrink-0">
           <div className="flex items-center gap-3 overflow-hidden">
-            <div className="w-10 h-10 rounded-xl bg-[#136239] flex items-center justify-center text-white font-bold shadow-lg shadow-emerald-900/40 shrink-0">
-              <Building2 className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-[#136239] flex items-center justify-center text-white font-bold shadow-lg shadow-emerald-900/40 shrink-0 overflow-hidden p-1.5">
+              {logoUrl && !logoLoadError ? (
+                <img
+                  src={logoUrl}
+                  alt={appName}
+                  className="w-full h-full object-contain"
+                  onError={() => setLogoLoadError(true)}
+                />
+              ) : (
+                <Building2 className="w-5 h-5 text-white" />
+              )}
             </div>
             <div className="min-w-0">
               <h1 className="text-sm font-bold text-white tracking-tight leading-snug truncate">

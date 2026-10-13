@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   FileText,
   Search,
@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   AlertCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, formatDateIndo } from '../lib/utils.ts';
@@ -51,13 +52,18 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
 }) => {
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
+
+  // Request sequencing tracker to ignore stale out-of-order responses
+  const activeRequestIdRef = useRef(0);
 
   // Preview & Delete states
   const [previewData, setPreviewData] = useState<InvoicePDFData | null>(null);
@@ -71,43 +77,72 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
 
   const toast = useToast();
 
-  const loadInvoices = async () => {
-    setLoading(true);
-    const query = new URLSearchParams({
-      search,
-      status: statusFilter,
-      start_date: startDate,
-      end_date: endDate,
-      page: page.toString(),
-      limit: '10',
-    });
+  // Debounce search input by 300ms to prevent request flooding
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-    const res = await apiRequest(`/api/invoices?${query.toString()}`);
-    if (res.success && res.data) {
-      setInvoices(res.data);
-      if (res.pagination) {
-        setTotalPages(res.pagination.totalPages || 1);
-        setTotalCount(res.pagination.total || 0);
-      }
-    } else {
-      toast.error(res.message || 'Gagal memuat invoice');
+  const loadInvoices = async (isBackground = false) => {
+    const currentReqId = ++activeRequestIdRef.current;
+    if (!isBackground) {
+      setLoading(true);
+      setLoadError(null);
     }
-    setLoading(false);
+
+    try {
+      const query = new URLSearchParams();
+      if (debouncedSearch) query.set('search', debouncedSearch);
+      if (statusFilter && statusFilter !== 'all') query.set('status', statusFilter);
+      if (startDate) query.set('start_date', startDate);
+      if (endDate) query.set('end_date', endDate);
+      query.set('page', page.toString());
+      query.set('limit', '10');
+
+      const res = await apiRequest(`/api/invoices?${query.toString()}`);
+      if (currentReqId !== activeRequestIdRef.current) return; // Stale request, ignore
+
+      if (res.success && Array.isArray(res.data)) {
+        setInvoices(res.data);
+        setLoadError(null);
+        if (res.pagination) {
+          setTotalPages(Math.max(1, res.pagination.totalPages || 1));
+          setTotalCount(res.pagination.total || 0);
+        }
+      } else {
+        const errMsg = res.message || 'Gagal memuat invoice';
+        if (!isBackground) {
+          setLoadError(errMsg);
+          toast.error(errMsg);
+        }
+      }
+    } catch (err: any) {
+      if (currentReqId === activeRequestIdRef.current && !isBackground) {
+        const errMsg = err?.message || 'Gagal terhubung ke server';
+        setLoadError(errMsg);
+        toast.error('Gagal memuat invoice: ' + errMsg);
+      }
+    } finally {
+      if (currentReqId === activeRequestIdRef.current) {
+        setLoading(false);
+      }
+    }
   };
 
   useEffect(() => {
     loadInvoices();
-  }, [search, statusFilter, startDate, endDate, page]);
+  }, [debouncedSearch, statusFilter, startDate, endDate, page]);
 
   useEffect(() => {
-    const handleSync = () => loadInvoices();
+    const handleSync = () => loadInvoices(true);
     window.addEventListener('database_synced', handleSync);
-    window.addEventListener('focus', handleSync);
     return () => {
       window.removeEventListener('database_synced', handleSync);
-      window.removeEventListener('focus', handleSync);
     };
-  }, []);
+  }, [debouncedSearch, statusFilter, startDate, endDate, page]);
 
   // Handle external trigger for preview (e.g. from Dashboard)
   useEffect(() => {
@@ -428,9 +463,24 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
-                      <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                      <div className="w-5 h-5 border-2 border-[#136239] border-t-transparent rounded-full animate-spin" />
                       <span>Memuat daftar invoice...</span>
                     </div>
+                  </td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={8} className="py-12 text-center text-slate-500">
+                    <AlertCircle className="w-10 h-10 mx-auto text-rose-500 mb-2" />
+                    <p className="font-bold text-slate-800">Gagal Memuat Daftar Invoice</p>
+                    <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">{loadError}</p>
+                    <button
+                      onClick={() => loadInvoices(false)}
+                      className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#136239] text-white text-xs font-bold hover:bg-[#0f4d2d] transition shadow-xs cursor-pointer"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      <span>Coba Lagi</span>
+                    </button>
                   </td>
                 </tr>
               ) : invoices.length === 0 ? (
@@ -441,6 +491,21 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                     <p className="text-xs text-slate-400 mt-0.5">
                       Coba sesuaikan filter pencarian atau buat invoice baru
                     </p>
+                    {(search || statusFilter !== 'all' || startDate || endDate) && (
+                      <button
+                        onClick={() => {
+                          setSearch('');
+                          setStatusFilter('all');
+                          setStartDate('');
+                          setEndDate('');
+                          setPage(1);
+                        }}
+                        className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-xs cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Reset Filter</span>
+                      </button>
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -479,7 +544,7 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                       </td>
                       <td className="py-4 px-4 text-center">
                         <span className="text-xs font-semibold text-slate-700">
-                          {inv.item_count || 1} jenis ({inv.total_qty || 0} unit)
+                          {inv.item_count || 1} jenis (Qty: {inv.total_qty || 0})
                         </span>
                       </td>
                       <td className="py-4 px-4 text-right font-extrabold text-slate-900 text-sm">

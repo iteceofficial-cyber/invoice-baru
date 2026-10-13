@@ -573,3 +573,97 @@ function formatYearMonthIndo(ym: string): string {
   const name = months[monthNum - 1] || parts[1];
   return `${name} ${year}`;
 }
+
+// 7. Export Single Invoice or Draft to Excel (.xlsx)
+export function exportSingleInvoiceExcel(data: {
+  invoice_number?: string;
+  customer_name?: string;
+  customer_address?: string;
+  customer_phone?: string;
+  activity_date?: string;
+  due_date?: string;
+  subtotal?: number;
+  discount_amount?: number;
+  tax_amount?: number;
+  total_amount?: number;
+  status?: string;
+  notes?: string;
+  items?: Array<{
+    product_code?: string;
+    product_name?: string;
+    qty?: number;
+    unit?: string;
+    price?: number;
+    subtotal?: number;
+  }>;
+}) {
+  const workbook = XLSX.utils.book_new();
+
+  const rawItems = Array.isArray(data.items) ? data.items : [];
+  const statusLabel =
+    data.status === 'paid'
+      ? 'LUNAS (PAID)'
+      : data.status === 'pending'
+      ? 'MENUNGGU PEMBAYARAN'
+      : data.status === 'cancelled'
+      ? 'DIBATALKAN'
+      : (data.status || 'DRAFT').toUpperCase();
+
+  // Create formatted worksheet with metadata and items
+  const sheetData: any[][] = [
+    ['FAKTUR INVOICE'],
+    ['Nomor Invoice', data.invoice_number || 'INV/DRAFT'],
+    ['Tanggal', data.activity_date || new Date().toISOString().split('T')[0]],
+    ['Status', statusLabel],
+    ['Pelanggan / Klien', data.customer_name || '-'],
+    ['Alamat', data.customer_address || '-'],
+    ['Telepon', data.customer_phone || '-'],
+    [''],
+    ['No', 'Kode Produk', 'Deskripsi Barang / Layanan', 'Qty', 'Harga Satuan (Rp)', 'Subtotal (Rp)'],
+  ];
+
+  if (rawItems.length === 0) {
+    sheetData.push(['-', '-', 'Belum ada rincian barang', 0, 0, 0]);
+  } else {
+    rawItems.forEach((it, idx) => {
+      sheetData.push([
+        idx + 1,
+        it.product_code || '-',
+        it.product_name || 'Barang',
+        Number(it.qty) || 1, // Angka murni kuantitas tanpa embel-embel satuan
+        Number(it.price) || 0,
+        Number(it.subtotal) || 0,
+      ]);
+    });
+  }
+
+  sheetData.push(['']);
+  sheetData.push(['', '', '', 'Subtotal (Rp)', '', Number(data.subtotal) || 0]);
+  if (data.discount_amount) {
+    sheetData.push(['', '', '', 'Diskon (Rp)', '', Number(data.discount_amount) || 0]);
+  }
+  if (data.tax_amount) {
+    sheetData.push(['', '', '', 'PPN (Rp)', '', Number(data.tax_amount) || 0]);
+  }
+  sheetData.push(['', '', '', 'Total Akhir (Rp)', '', Number(data.total_amount) || 0]);
+
+  if (data.notes) {
+    sheetData.push(['']);
+    sheetData.push(['Catatan:', data.notes]);
+  }
+
+  const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+  worksheet['!cols'] = [
+    { wch: 6 },
+    { wch: 16 },
+    { wch: 38 },
+    { wch: 10 },
+    { wch: 18 },
+    { wch: 20 },
+  ];
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Invoice');
+
+  const safeName = (data.invoice_number || 'DRAFT').replace(/[^a-zA-Z0-9_-]/g, '-');
+  triggerDownload(workbook, `Invoice-${safeName}.xlsx`);
+}

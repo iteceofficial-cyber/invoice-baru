@@ -14,6 +14,7 @@ import {
   Link2,
   ExternalLink,
   RotateCcw,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { formatRupiah, terbilang, formatDateIndo } from '../lib/utils.ts';
 import {
@@ -24,6 +25,7 @@ import {
   buildWhatsAppInvoiceMessage,
   PaymentMethodItem,
 } from '../lib/pdfGenerator.ts';
+import { exportSingleInvoiceExcel } from '../lib/excelHelper.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useToast } from '../context/ToastContext.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
@@ -209,6 +211,18 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
             </button>
 
             <button
+              onClick={() => {
+                exportSingleInvoiceExcel(data);
+                toast.success('Invoice berhasil diekspor ke Excel (.xlsx)!');
+              }}
+              title="Unduh faktur/draft ke format file Excel (.xlsx)"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-900/60 hover:bg-emerald-800/80 border border-emerald-700/60 text-xs font-semibold text-emerald-300 transition cursor-pointer"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+              <span>Excel</span>
+            </button>
+
+            <button
               onClick={handleDownload}
               className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-xs font-bold text-white shadow-md shadow-emerald-950/20 transition cursor-pointer"
             >
@@ -349,7 +363,7 @@ export const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({
                               {item.product_name || 'Barang'}
                             </td>
                             <td className="py-2.5 px-3 text-center font-bold text-slate-800">
-                              {item.qty || 1} {item.unit || 'Pcs'}
+                              {item.qty || 1}
                             </td>
                             <td className="py-2.5 px-3 text-right font-mono text-slate-600">
                               {formatRupiah(item.price || 0)}

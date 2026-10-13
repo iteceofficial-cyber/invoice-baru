@@ -12,10 +12,12 @@ import {
   ShieldCheck,
   AlertCircle,
   ArrowLeft,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, formatDateIndo, terbilang } from '../lib/utils.ts';
 import { generateInvoicePDF, InvoicePDFData, PaymentMethodItem } from '../lib/pdfGenerator.ts';
+import { exportSingleInvoiceExcel } from '../lib/excelHelper.ts';
 
 interface PublicInvoiceViewProps {
   invoiceIdentifier: string;
@@ -268,6 +270,19 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
             </button>
 
             <button
+              onClick={() => {
+                if (invoiceData) {
+                  exportSingleInvoiceExcel(invoiceData);
+                }
+              }}
+              title="Unduh faktur ke format Excel (.xlsx)"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-[#136239] border border-emerald-300 text-xs font-bold transition cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Unduh Excel</span>
+            </button>
+
+            <button
               onClick={handleDownloadPDF}
               disabled={downloading}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-white text-xs font-bold shadow-md shadow-emerald-950/20 transition cursor-pointer"
@@ -415,7 +430,7 @@ export const PublicInvoiceView: React.FC<PublicInvoiceViewProps> = ({
                           {item.product_name}
                         </td>
                         <td className="py-2.5 px-3 text-center font-medium text-slate-700">
-                          {item.qty} {item.unit}
+                          {item.qty}
                         </td>
                         <td className="py-2.5 px-3 text-right text-slate-600 font-mono">
                           {formatRupiah(item.price)}
