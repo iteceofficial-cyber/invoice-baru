@@ -32,25 +32,19 @@ export const apiRouter = express.Router();
 // AUTO-SYNC MIDDLEWARE ACROSS DEVICES & LINKS
 // ==========================================
 apiRouter.use(async (req, res, next) => {
-  // 1. Sync from Cloud Firestore (background check on GET so read queries are instant)
-  if (req.method === 'GET') {
+  // 1. Sync from Cloud Firestore in background so API requests are never blocked
+  if (isCloudPersistenceActive()) {
     checkAndSyncFromFirestore().catch((err) => {
       console.warn('[Auto-sync Check Warning]:', err);
     });
-  } else {
-    try {
-      await checkAndSyncFromFirestore();
-    } catch (err) {
-      console.warn('[Auto-sync Check Warning]:', err);
-    }
   }
 
-  // 2. On successful data mutation, immediately ensure cloud sync triggers
+  // 2. On successful data mutation, immediately persist to disk and trigger background cloud sync
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && !req.path.includes('/system/sync-cloud')) {
     const originalJson = res.json.bind(res);
     res.json = function (body: any) {
       if (body && body.success !== false) {
-        saveDb(true); // Immediate sync to Firestore
+        saveDb(true); // Persist to disk and queue background cloud sync
       }
       return originalJson(body);
     };
@@ -1388,21 +1382,24 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
     const countRow = queryOne<{ total: number }>(`SELECT COUNT(*) as total FROM invoices i ${whereSql}`, params);
     const total = Number(countRow?.total) || 0;
 
-    const dataQuery = `
-      SELECT i.*, 
-             COALESCE(COUNT(ii.id), 0) as item_count, 
-             COALESCE(SUM(ii.qty), 0) as total_qty, 
-             COALESCE(u.full_name, 'Admin') as created_by_name
-      FROM invoices i
-      LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
-      LEFT JOIN users u ON i.created_by_user_id = u.id
-      ${whereSql}
-      GROUP BY i.id
-      ORDER BY i.id DESC
-      LIMIT ? OFFSET ?
-    `;
+    let invoices: any[] = [];
+    if (total > 0) {
+      const dataQuery = `
+        SELECT i.*, 
+               COALESCE(COUNT(ii.id), 0) as item_count, 
+               COALESCE(SUM(ii.qty), 0) as total_qty, 
+               COALESCE(u.full_name, 'Admin') as created_by_name
+        FROM invoices i
+        LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
+        LEFT JOIN users u ON i.created_by_user_id = u.id
+        ${whereSql}
+        GROUP BY i.id
+        ORDER BY i.id DESC
+        LIMIT ? OFFSET ?
+      `;
 
-    const invoices = queryAll(dataQuery, [...params, limitNum, offset]);
+      invoices = queryAll(dataQuery, [...params, limitNum, offset]);
+    }
 
     const safeInvoices = (invoices || []).map((inv: any) => ({
       ...inv,
@@ -3025,14 +3022,17 @@ apiRouter.post('/reports/items-out/delete-batch', requireAuth, (req: Authenticat
 // Public branding & system info endpoint (unauthenticated for login view & app branding)
 apiRouter.get('/settings/public', (_req: Request, res: Response) => {
   try {
-    const company = queryOne('SELECT company_name, logo_url, address, phone, email, website FROM company_settings WHERE id = 1');
-    const invoice = queryOne('SELECT app_name, primary_color, secondary_color, header_image_url, footer_image_url, public_app_url FROM invoice_settings WHERE id = 1');
+    const company = queryOne<any>('SELECT company_name, logo_url, favicon_url, address, phone, email, website FROM company_settings WHERE id = 1');
+    const invoice = queryOne<any>('SELECT app_name, primary_color, secondary_color, header_image_url, footer_image_url, public_app_url FROM invoice_settings WHERE id = 1');
+    const logoUrl = company?.logo_url || '';
+    const faviconUrl = company?.favicon_url || logoUrl || '/favicon.svg';
     return res.json({
       success: true,
       data: {
         company_name: company?.company_name || 'Info Papandayan',
         app_name: invoice?.app_name || 'Info Papandayan - Invoice & Logistik',
-        logo_url: company?.logo_url || '',
+        logo_url: logoUrl,
+        favicon_url: faviconUrl,
         header_image_url: invoice?.header_image_url || '/invoice-header.svg',
         footer_image_url: invoice?.footer_image_url || '/invoice-footer.svg',
         primary_color: invoice?.primary_color || '#136239',
@@ -3047,8 +3047,17 @@ apiRouter.get('/settings/public', (_req: Request, res: Response) => {
 
 apiRouter.get('/settings/company', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const company = queryOne('SELECT * FROM company_settings WHERE id = 1');
-    return res.json({ success: true, data: company });
+    const company = queryOne<any>('SELECT * FROM company_settings WHERE id = 1');
+    const logoUrl = company?.logo_url || '';
+    const faviconUrl = company?.favicon_url || logoUrl || '/favicon.svg';
+    return res.json({
+      success: true,
+      data: {
+        ...company,
+        logo_url: logoUrl,
+        favicon_url: faviconUrl,
+      },
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal memuat pengaturan perusahaan: ' + err.message });
   }
@@ -3056,7 +3065,7 @@ apiRouter.get('/settings/company', requireAuth, (_req: AuthenticatedRequest, res
 
 apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { company_name, logo_url, address, phone, email, website, bank_account_no, bank_name, bank_account_name } = req.body;
+    const { company_name, logo_url, favicon_url, address, phone, email, website, bank_account_no, bank_name, bank_account_name } = req.body;
 
     if (!company_name) {
       return res.status(400).json({ success: false, message: 'Nama perusahaan wajib diisi' });
@@ -3067,15 +3076,17 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
     const finalBankName = bank_name !== undefined ? bank_name?.trim() : (currentComp?.bank_name || '');
     const finalBankOwner = bank_account_name !== undefined ? bank_account_name?.trim() : (currentComp?.bank_account_name || '');
     const finalLogoUrl = logo_url !== undefined ? (logo_url || '').trim() : (currentComp?.logo_url || '');
+    const finalFaviconUrl = favicon_url !== undefined ? (favicon_url || '').trim() : (currentComp?.favicon_url || finalLogoUrl);
 
     runQuery(
       `UPDATE company_settings
-       SET company_name = ?, logo_url = ?, address = ?, phone = ?, email = ?, website = ?,
+       SET company_name = ?, logo_url = ?, favicon_url = ?, address = ?, phone = ?, email = ?, website = ?,
            bank_account_no = ?, bank_name = ?, bank_account_name = ?, updated_at = datetime('now', 'localtime')
        WHERE id = 1`,
       [
         company_name.trim(),
         finalLogoUrl,
+        finalFaviconUrl,
         address?.trim() || '',
         phone?.trim() || '',
         email?.trim() || '',
@@ -3101,6 +3112,7 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
       message: 'Informasi perusahaan dan logo berhasil diperbarui!',
       data: {
         logo_url: finalLogoUrl,
+        favicon_url: finalFaviconUrl,
       },
     });
   } catch (err: any) {
@@ -3108,17 +3120,24 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
   }
 });
 
-// Dedicated route to update App & Company Logo specifically
+// Dedicated route to update App & Favicon Logo specifically
 apiRouter.put('/settings/logo', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { logo_url } = req.body;
-    const finalLogo = typeof logo_url === 'string' ? logo_url.trim() : '';
+    const { logo_url, favicon_url, sync_both } = req.body;
+    const current = queryOne<any>('SELECT logo_url, favicon_url FROM company_settings WHERE id = 1');
+
+    let finalLogo = logo_url !== undefined ? (typeof logo_url === 'string' ? logo_url.trim() : '') : (current?.logo_url || '');
+    let finalFavicon = favicon_url !== undefined ? (typeof favicon_url === 'string' ? favicon_url.trim() : '') : (current?.favicon_url || '');
+
+    if (sync_both || (!favicon_url && logo_url)) {
+      finalFavicon = finalLogo;
+    }
 
     runQuery(
       `UPDATE company_settings
-       SET logo_url = ?, updated_at = datetime('now', 'localtime')
+       SET logo_url = ?, favicon_url = ?, updated_at = datetime('now', 'localtime')
        WHERE id = 1`,
-      [finalLogo]
+      [finalLogo, finalFavicon]
     );
 
     saveDb(true);
@@ -3127,21 +3146,83 @@ apiRouter.put('/settings/logo', requireAuth, (req: AuthenticatedRequest, res: Re
       req.user?.id || null,
       req.user?.username || 'admin',
       'Mengubah Pengaturan',
-      finalLogo ? 'Memperbarui logo aplikasi dan profil usaha' : 'Mereset logo aplikasi ke logo bawaan',
+      finalLogo ? 'Memperbarui logo aplikasi dan favicon tab browser' : 'Mereset logo aplikasi ke logo bawaan',
       req.ip
     );
 
     return res.json({
       success: true,
-      message: finalLogo ? 'Logo aplikasi dan usaha berhasil diperbarui!' : 'Logo berhasil direset ke logo bawaan!',
+      message: finalLogo ? 'Logo aplikasi dan favicon tab berhasil diperbarui!' : 'Logo berhasil direset ke logo bawaan!',
       data: {
         logo_url: finalLogo,
+        favicon_url: finalFavicon,
       },
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal memperbarui logo: ' + err.message });
   }
 });
+
+// Dedicated route to upload logo file directly (PNG, JPG, SVG, WebP, ICO, GIF)
+apiRouter.post('/settings/upload-logo', requireAuth, upload.single('file') as any, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const file = (req as any).file;
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'Tidak ada file logo yang diunggah' });
+    }
+
+    const target = (req.query.target as string) || (req.body.target as string) || 'both';
+    const syncBoth = req.query.sync_both === 'true' || req.body.sync_both === 'true' || target === 'both';
+
+    const mime = file.mimetype || 'image/png';
+    const base64 = file.buffer.toString('base64');
+    const dataUrl = `data:${mime};base64,${base64}`;
+
+    const current = queryOne<any>('SELECT logo_url, favicon_url FROM company_settings WHERE id = 1');
+    let newLogo = current?.logo_url || '';
+    let newFavicon = current?.favicon_url || '';
+
+    if (target === 'favicon') {
+      newFavicon = dataUrl;
+    } else if (target === 'logo') {
+      newLogo = dataUrl;
+      if (syncBoth) {
+        newFavicon = dataUrl;
+      }
+    } else {
+      // both
+      newLogo = dataUrl;
+      newFavicon = dataUrl;
+    }
+
+    runQuery(
+      `UPDATE company_settings
+       SET logo_url = ?, favicon_url = ?, updated_at = datetime('now', 'localtime')
+       WHERE id = 1`,
+      [newLogo, newFavicon]
+    );
+
+    saveDb(true);
+
+    logActivity(
+      req.user?.id || null,
+      req.user?.username || 'admin',
+      'Mengubah Pengaturan',
+      `Mengunggah file logo (${target}) baru`,
+      req.ip
+    );
+
+    return res.json({
+      success: true,
+      logo_url: newLogo,
+      favicon_url: newFavicon,
+      message: 'File logo berhasil diunggah dan disimpan ke aplikasi & tab browser!',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal mengunggah logo: ' + err.message });
+  }
+});
+
 
 apiRouter.get('/settings/invoice', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
   try {

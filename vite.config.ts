@@ -12,6 +12,9 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true as true,
       // HMR is disabled in AI Studio preview to prevent WebSocket errors and flickering
       hmr: false,
       watch: null,

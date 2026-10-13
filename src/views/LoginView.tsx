@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Building2, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, FileText, Search } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
+import { updateBrowserBranding } from '../lib/utils.ts';
 
 interface LoginViewProps {
   onOpenPublicInvoice?: (identifier: string) => void;
@@ -31,14 +32,16 @@ export const LoginView: React.FC<LoginViewProps> = ({
     if (propLogoUrl !== undefined) {
       setLogoUrl(propLogoUrl);
       setLogoLoadError(false);
+      updateBrowserBranding(propLogoUrl, companyName);
     }
-  }, [propLogoUrl]);
+  }, [propLogoUrl, companyName]);
 
   useEffect(() => {
     if (propCompanyName !== undefined) {
       setCompanyName(propCompanyName);
+      updateBrowserBranding(logoUrl, propCompanyName);
     }
-  }, [propCompanyName]);
+  }, [propCompanyName, logoUrl]);
 
   useEffect(() => {
     // Load public branding if not passed as props
@@ -47,8 +50,14 @@ export const LoginView: React.FC<LoginViewProps> = ({
         .then((res) => res.json())
         .then((res) => {
           if (res.success && res.data) {
-            if (res.data.logo_url) setLogoUrl(res.data.logo_url);
-            if (res.data.company_name) setCompanyName(res.data.company_name);
+            if (res.data.logo_url) {
+              setLogoUrl(res.data.logo_url);
+            }
+            if (res.data.company_name) {
+              setCompanyName(res.data.company_name);
+            }
+            const fav = res.data.favicon_url || res.data.logo_url || '/favicon.svg';
+            updateBrowserBranding(fav, res.data.company_name || res.data.app_name);
           }
         })
         .catch(() => {});

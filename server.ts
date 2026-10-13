@@ -50,6 +50,16 @@ async function startServer() {
     });
   });
 
+  // Global JSON error handler for API errors (prevents returning HTML error pages to frontend)
+  app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('[API Server Error]:', err);
+    res.status(500).json({
+      success: false,
+      message: err?.message || 'Terjadi kesalahan pada backend server',
+    });
+  });
+
+
   // Health check endpoint
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

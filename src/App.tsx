@@ -16,11 +16,76 @@ import { ActivityLogsView } from './views/ActivityLogsView.tsx';
 import { ChangePasswordView } from './views/ChangePasswordView.tsx';
 import { PublicInvoiceView } from './views/PublicInvoiceView.tsx';
 import { apiRequest } from './services/api.ts';
+import { updateBrowserBranding } from './lib/utils.ts';
 
 function MainAppContent() {
   const { isAuthenticated, isLoading, isSuperAdmin } = useAuth();
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Dynamic branding state (app name, company name, logo, favicon)
+  const [appName, setAppName] = useState('Info Papandayan - Invoice & Logistik');
+  const [companyName, setCompanyName] = useState('Info Papandayan');
+  const [logoUrl, setLogoUrl] = useState<string>('');
+  const [faviconUrl, setFaviconUrl] = useState<string>('');
+
+  useEffect(() => {
+    loadBranding();
+    const handleBrandingChange = (e: any) => {
+      if (e?.detail?.logo_url !== undefined) {
+        setLogoUrl(e.detail.logo_url);
+      }
+      if (e?.detail?.favicon_url !== undefined) {
+        setFaviconUrl(e.detail.favicon_url);
+      }
+      if (e?.detail?.app_name) {
+        setAppName(e.detail.app_name);
+      }
+      if (e?.detail?.company_name) {
+        setCompanyName(e.detail.company_name);
+      }
+      loadBranding();
+    };
+    window.addEventListener('app_branding_updated', handleBrandingChange);
+    window.addEventListener('database_synced', loadBranding);
+    return () => {
+      window.removeEventListener('app_branding_updated', handleBrandingChange);
+      window.removeEventListener('database_synced', loadBranding);
+    };
+  }, [isAuthenticated]);
+
+  const loadBranding = async () => {
+    try {
+      const pubRes = await apiRequest('/api/settings/public');
+      if (pubRes.success && pubRes.data) {
+        if (pubRes.data.app_name) setAppName(pubRes.data.app_name);
+        if (pubRes.data.company_name) setCompanyName(pubRes.data.company_name);
+        if (pubRes.data.logo_url !== undefined) setLogoUrl(pubRes.data.logo_url);
+        const fav = pubRes.data.favicon_url || pubRes.data.logo_url || '/favicon.svg';
+        setFaviconUrl(fav);
+        updateBrowserBranding(fav, pubRes.data.app_name || pubRes.data.company_name);
+        return;
+      }
+      if (isAuthenticated) {
+        const invSetRes = await apiRequest('/api/settings/invoice');
+        if (invSetRes.success && invSetRes.data?.app_name) {
+          setAppName(invSetRes.data.app_name);
+        }
+        const compRes = await apiRequest('/api/settings/company');
+        if (compRes.success && compRes.data?.company_name) {
+          setCompanyName(compRes.data.company_name);
+        }
+        if (compRes.success) {
+          if (compRes.data?.logo_url !== undefined) setLogoUrl(compRes.data.logo_url);
+          const fav = compRes.data?.favicon_url || compRes.data?.logo_url || '/favicon.svg';
+          setFaviconUrl(fav);
+          updateBrowserBranding(fav, invSetRes.data?.app_name || compRes.data?.company_name);
+        }
+      }
+    } catch (e) {
+      // Keep default fallback branding
+    }
+  };
 
   // Check if public invoice URL parameter is present (?inv=..., ?id=..., or /invoice/...)
   const [publicInvoiceIdentifier, setPublicInvoiceIdentifier] = useState<string | null>(() => {
@@ -65,37 +130,6 @@ function MainAppContent() {
   const [editInvoiceId, setEditInvoiceId] = useState<number | null>(null);
   const [previewInvoiceId, setPreviewInvoiceId] = useState<number | null>(null);
 
-  // App settings for dynamic header branding
-  const [appName, setAppName] = useState('Info Papandayan - Invoice & Logistik');
-  const [companyName, setCompanyName] = useState('Info Papandayan');
-
-  useEffect(() => {
-    loadBranding();
-  }, [isAuthenticated]);
-
-  const loadBranding = async () => {
-    try {
-      const pubRes = await apiRequest('/api/settings/public');
-      if (pubRes.success && pubRes.data) {
-        if (pubRes.data.app_name) setAppName(pubRes.data.app_name);
-        if (pubRes.data.company_name) setCompanyName(pubRes.data.company_name);
-        return;
-      }
-      if (isAuthenticated) {
-        const invSetRes = await apiRequest('/api/settings/invoice');
-        if (invSetRes.success && invSetRes.data?.app_name) {
-          setAppName(invSetRes.data.app_name);
-        }
-        const compRes = await apiRequest('/api/settings/company');
-        if (compRes.success && compRes.data?.company_name) {
-          setCompanyName(compRes.data.company_name);
-        }
-      }
-    } catch (e) {
-      // Keep default fallback branding
-    }
-  };
-
   // If public invoice download/view link is accessed
   if (publicInvoiceIdentifier) {
     return (
@@ -119,10 +153,12 @@ function MainAppContent() {
     );
   }
 
-  // If not logged in, show Login page
+  // If not logged in, show Login page with custom logoUrl
   if (!isAuthenticated) {
     return (
       <LoginView
+        logoUrl={logoUrl}
+        companyName={companyName}
         onOpenPublicInvoice={(id) => {
           setPublicInvoiceIdentifier(id);
           window.history.pushState({}, '', `/?inv=${encodeURIComponent(id)}`);
@@ -160,6 +196,7 @@ function MainAppContent() {
         isOpen={isMobileMenuOpen}
         onClose={() => setIsMobileMenuOpen(false)}
         appName={appName}
+        logoUrl={logoUrl}
       />
 
       {/* Main Content Area */}
@@ -170,6 +207,7 @@ function MainAppContent() {
           currentTab={currentTab}
           onNavigate={handleNavigate}
           companyName={companyName}
+          logoUrl={logoUrl}
         />
 
         {/* View Router */}

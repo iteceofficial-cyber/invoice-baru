@@ -508,6 +508,9 @@ export const CreateInvoiceView: React.FC<CreateInvoiceViewProps> = ({
         generateInvoicePDF(pdfData, 'print');
       }
 
+      window.dispatchEvent(new CustomEvent('invoices_updated'));
+      window.dispatchEvent(new CustomEvent('database_synced'));
+
       if (onClearEdit) onClearEdit();
       onNavigate('invoices');
     } else {

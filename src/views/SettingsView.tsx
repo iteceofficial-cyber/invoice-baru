@@ -30,10 +30,12 @@ import { useToast } from '../context/ToastContext.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { ChangePasswordView } from './ChangePasswordView.tsx';
 import { PaymentMethodItem, DEFAULT_WHATSAPP_TEMPLATE, DEFAULT_PAYMENT_METHODS } from '../lib/pdfGenerator.ts';
+import { updateBrowserBranding } from '../lib/utils.ts';
 
 interface CompanySettings {
   company_name: string;
   logo_url: string;
+  favicon_url?: string;
   address: string;
   phone: string;
   email: string;
@@ -71,11 +73,24 @@ export const SettingsView: React.FC = () => {
   const isSuperAdmin = user?.role_name === 'Super Admin' || user?.role_id === 1;
 
   const [activeTab, setActiveTab] = useState<
-    'company' | 'header-footer' | 'payment' | 'whatsapp' | 'invoice' | 'branding' | 'security' | 'cloud'
-  >('company');
+    'logo' | 'company' | 'header-footer' | 'payment' | 'whatsapp' | 'invoice' | 'branding' | 'security' | 'cloud'
+  >('logo');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [syncingCloud, setSyncingCloud] = useState(false);
+
+  // Logo & Favicon editor states
+  const [logoInput, setLogoInput] = useState('');
+  const [logoPreview, setLogoPreview] = useState('');
+  const [faviconInput, setFaviconInput] = useState('');
+  const [faviconPreview, setFaviconPreview] = useState('');
+  const [syncFaviconWithLogo, setSyncFaviconWithLogo] = useState(true);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [isUploadingFavicon, setIsUploadingFavicon] = useState(false);
+  const [isSavingLogo, setIsSavingLogo] = useState(false);
+  const logoFileInputRef = useRef<HTMLInputElement>(null);
+  const faviconFileInputRef = useRef<HTMLInputElement>(null);
+
   const [cloudStatus, setCloudStatus] = useState<{ active: boolean; message: string }>({
     active: true,
     message: 'Tersambung ke Cloud Firestore',
@@ -281,6 +296,13 @@ export const SettingsView: React.FC = () => {
     const compRes = await apiRequest('/api/settings/company');
     if (compRes.success && compRes.data) {
       setCompany(compRes.data);
+      const l = compRes.data.logo_url || '';
+      const f = compRes.data.favicon_url || compRes.data.logo_url || '';
+      setLogoInput(l);
+      setLogoPreview(l);
+      setFaviconInput(f);
+      setFaviconPreview(f);
+      setSyncFaviconWithLogo(!compRes.data.favicon_url || compRes.data.favicon_url === compRes.data.logo_url);
     }
 
     const invRes = await apiRequest('/api/settings/invoice');
@@ -321,6 +343,173 @@ export const SettingsView: React.FC = () => {
       setPaymentMethods(loadedMethods);
     }
     if (isInitial) setLoading(false);
+  };
+
+  // Logo & Browser Tab Favicon Handlers
+  const handleUploadLogoFile = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    target: 'logo' | 'favicon' = 'logo'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error('Ukuran file maksimal 8MB');
+      return;
+    }
+
+    if (target === 'favicon') {
+      setIsUploadingFavicon(true);
+    } else {
+      setIsUploadingLogo(true);
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('target', target);
+    formData.append('sync_both', syncFaviconWithLogo ? 'true' : 'false');
+
+    try {
+      const res = await apiRequest(`/api/settings/upload-logo?target=${target}&sync_both=${syncFaviconWithLogo}`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (res.success) {
+        if (target === 'favicon') {
+          const favUrl = res.favicon_url || res.logo_url;
+          setFaviconInput(favUrl);
+          setFaviconPreview(favUrl);
+          setCompany((prev) => ({ ...prev, favicon_url: favUrl }));
+          updateBrowserBranding(favUrl, company.company_name);
+          window.dispatchEvent(
+            new CustomEvent('app_branding_updated', {
+              detail: { favicon_url: favUrl, company_name: company.company_name },
+            })
+          );
+          toast.success('Ikon favicon tab browser berhasil diunggah dan diterapkan!');
+        } else {
+          const lUrl = res.logo_url;
+          setLogoInput(lUrl);
+          setLogoPreview(lUrl);
+          setCompany((prev) => ({
+            ...prev,
+            logo_url: lUrl,
+            favicon_url: syncFaviconWithLogo ? lUrl : prev.favicon_url,
+          }));
+
+          if (syncFaviconWithLogo) {
+            setFaviconInput(lUrl);
+            setFaviconPreview(lUrl);
+            updateBrowserBranding(lUrl, company.company_name);
+          }
+
+          window.dispatchEvent(
+            new CustomEvent('app_branding_updated', {
+              detail: {
+                logo_url: lUrl,
+                favicon_url: syncFaviconWithLogo ? lUrl : faviconInput,
+                company_name: company.company_name,
+              },
+            })
+          );
+          toast.success(
+            syncFaviconWithLogo
+              ? 'Logo aplikasi & favicon tab browser berhasil diunggah dan disimpan!'
+              : 'Logo tampilan awal berhasil diunggah dan disimpan!'
+          );
+        }
+        window.dispatchEvent(new Event('database_synced'));
+      } else {
+        toast.error(res.message || 'Gagal mengunggah file logo');
+      }
+    } catch (err: any) {
+      toast.error('Gagal mengunggah logo: ' + err.message);
+    } finally {
+      setIsUploadingLogo(false);
+      setIsUploadingFavicon(false);
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const handleSaveLogoUrl = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingLogo(true);
+    try {
+      const finalLogo = logoInput.trim();
+      const finalFavicon = syncFaviconWithLogo ? finalLogo : (faviconInput.trim() || finalLogo);
+
+      const res = await apiRequest('/api/settings/logo', {
+        method: 'PUT',
+        body: JSON.stringify({
+          logo_url: finalLogo,
+          favicon_url: finalFavicon,
+          sync_both: syncFaviconWithLogo,
+        }),
+      });
+
+      if (res.success) {
+        setLogoPreview(finalLogo);
+        setFaviconPreview(finalFavicon);
+        setCompany((prev) => ({
+          ...prev,
+          logo_url: finalLogo,
+          favicon_url: finalFavicon,
+        }));
+
+        updateBrowserBranding(finalFavicon || '/favicon.svg', company.company_name);
+        window.dispatchEvent(
+          new CustomEvent('app_branding_updated', {
+            detail: {
+              logo_url: finalLogo,
+              favicon_url: finalFavicon,
+              company_name: company.company_name,
+            },
+          })
+        );
+        window.dispatchEvent(new Event('database_synced'));
+        toast.success(res.message || 'Logo aplikasi & favicon tab browser berhasil diperbarui!');
+      } else {
+        toast.error(res.message || 'Gagal memperbarui logo');
+      }
+    } catch (err: any) {
+      toast.error('Gagal menyimpan logo: ' + err.message);
+    } finally {
+      setIsSavingLogo(false);
+    }
+  };
+
+  const handleResetLogo = async () => {
+    setIsSavingLogo(true);
+    try {
+      const res = await apiRequest('/api/settings/logo', {
+        method: 'PUT',
+        body: JSON.stringify({ logo_url: '', favicon_url: '', sync_both: true }),
+      });
+
+      if (res.success) {
+        setLogoInput('');
+        setLogoPreview('');
+        setFaviconInput('');
+        setFaviconPreview('');
+        setSyncFaviconWithLogo(true);
+        setCompany((prev) => ({ ...prev, logo_url: '', favicon_url: '' }));
+        updateBrowserBranding('/favicon.svg', company.company_name);
+        window.dispatchEvent(
+          new CustomEvent('app_branding_updated', {
+            detail: { logo_url: '', favicon_url: '', company_name: company.company_name },
+          })
+        );
+        window.dispatchEvent(new Event('database_synced'));
+        toast.success('Logo dan ikon favicon berhasil direset ke logo bawaan sistem');
+      } else {
+        toast.error(res.message || 'Gagal mereset logo');
+      }
+    } catch (err: any) {
+      toast.error('Gagal mereset logo: ' + err.message);
+    } finally {
+      setIsSavingLogo(false);
+    }
   };
 
   const handleSaveCompany = async (e: React.FormEvent) => {
@@ -547,6 +736,18 @@ export const SettingsView: React.FC = () => {
       {/* Tabs */}
       <div className="flex border-b border-slate-200 gap-2 overflow-x-auto pb-px custom-scrollbar">
         <button
+          onClick={() => setActiveTab('logo')}
+          className={`flex items-center gap-2 px-4 py-2.5 font-bold text-xs border-b-2 transition whitespace-nowrap cursor-pointer ${
+            activeTab === 'logo'
+              ? 'border-[#136239] text-[#136239]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <ImageIcon className="w-4 h-4 text-emerald-600" />
+          <span>Logo Aplikasi & Favicon Tab Browser</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('company')}
           className={`flex items-center gap-2 px-4 py-2.5 font-bold text-xs border-b-2 transition whitespace-nowrap cursor-pointer ${
             activeTab === 'company'
@@ -643,6 +844,464 @@ export const SettingsView: React.FC = () => {
         </button>
       </div>
 
+      {/* TAB 0: Logo Aplikasi & Favicon Tab Browser */}
+      {activeTab === 'logo' && (
+        <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200/80 shadow-xs space-y-8 animate-in fade-in duration-150">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+            <div>
+              <h3 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+                <ImageIcon className="w-5 h-5 text-[#136239]" />
+                <span>Pengaturan Logo Aplikasi & Favicon Tab Browser</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Atur logo utama untuk tampilan awal (layar login), header dashboard, serta ikon favicon pada tab browser web.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleResetLogo}
+                disabled={isSavingLogo || isUploadingLogo || isUploadingFavicon || (!company.logo_url && !company.favicon_url)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-40"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                <span>Reset ke Bawaan Sistem</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 3 Live Visual Previews: Tab Browser, Tampilan Awal Login, dan Sidebar */}
+          <div>
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-3 flex items-center gap-1.5">
+              <Eye className="w-4 h-4 text-emerald-600" />
+              <span>Pratinjau Langsung (Live Preview)</span>
+            </h4>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Preview 1: Tampilan Tab di Browser */}
+              <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50/70 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                      1. Tab di Browser Web
+                    </span>
+                    <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
+                      Favicon Tab
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mb-3">
+                    Ikon dan judul di bilah tab Google Chrome, Safari, dan Microsoft Edge
+                  </p>
+
+                  {/* Browser Mockup Chrome */}
+                  <div className="bg-slate-800 rounded-xl p-2.5 shadow-md border border-slate-700">
+                    <div className="flex items-center gap-1.5 mb-2 px-1">
+                      <div className="w-2.5 h-2.5 rounded-full bg-rose-500/80" />
+                      <div className="w-2.5 h-2.5 rounded-full bg-amber-500/80" />
+                      <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
+                    </div>
+
+                    <div className="bg-slate-900 rounded-lg px-2.5 py-1.5 flex items-center gap-2 max-w-[240px] border border-slate-700">
+                      <div className="w-4 h-4 rounded-xs shrink-0 flex items-center justify-center overflow-hidden bg-white/10 p-0.5">
+                        {faviconPreview || logoPreview || company.favicon_url || company.logo_url ? (
+                          <img
+                            src={faviconPreview || logoPreview || company.favicon_url || company.logo_url}
+                            alt="Favicon"
+                            className="w-full h-full object-contain"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <img src="/favicon.svg" alt="Default" className="w-full h-full object-contain" />
+                        )}
+                      </div>
+                      <span className="text-[11px] font-semibold text-slate-200 truncate">
+                        {company.company_name || 'Info Papandayan'}
+                      </span>
+                      <span className="text-slate-500 text-[10px] ml-auto shrink-0">×</span>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-emerald-700 font-medium mt-3 bg-emerald-50 border border-emerald-200/60 rounded-xl p-2 text-center">
+                  Ikon tab browser diperbarui secara instan saat disimpan
+                </p>
+              </div>
+
+              {/* Preview 2: Tampilan Awal (Halaman Login) */}
+              <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50/70 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                      2. Tampilan Awal (Login)
+                    </span>
+                    <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full">
+                      Layar Pembuka
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mb-3">
+                    Logo brand yang dilihat konsumen dan staf saat pertama kali membuka aplikasi
+                  </p>
+
+                  {/* Login Card Mockup */}
+                  <div className="bg-[#07170e] rounded-xl p-4 text-center shadow-md border border-emerald-950/40">
+                    <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-[#136239] text-white shadow-md p-1.5 mb-2 ring-4 ring-emerald-500/20 overflow-hidden">
+                      {logoPreview || company.logo_url ? (
+                        <img
+                          src={logoPreview || company.logo_url}
+                          alt="Logo Preview"
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            (e.target as HTMLElement).style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <Building2 className="w-6 h-6 text-white" />
+                      )}
+                    </div>
+                    <p className="text-xs font-bold text-white truncate px-2">
+                      {company.company_name || 'Info Papandayan'}
+                    </p>
+                    <p className="text-[10px] text-emerald-400 font-medium tracking-wider uppercase mt-0.5">
+                      Sistem Invoice & Logistik
+                    </p>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500 mt-3 text-center">
+                  Tampil proporsional dan tajam di layar pembuka
+                </p>
+              </div>
+
+              {/* Preview 3: Tampilan Sidebar & Header */}
+              <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50/70 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                      3. Sidebar & Navigasi
+                    </span>
+                    <span className="text-[10px] bg-slate-200 text-slate-800 font-bold px-2 py-0.5 rounded-full">
+                      Panel Menu
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mb-3">
+                    Logo pada sudut kiri atas bilah navigasi setelah pengguna masuk
+                  </p>
+
+                  {/* Sidebar Header Mockup */}
+                  <div className="bg-slate-900 rounded-xl p-3 shadow-md border border-slate-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-[#136239] flex items-center justify-center text-white shrink-0 overflow-hidden p-1 shadow-sm">
+                        {logoPreview || company.logo_url ? (
+                          <img
+                            src={logoPreview || company.logo_url}
+                            alt="Logo Nav"
+                            className="w-full h-full object-contain"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <Building2 className="w-4 h-4 text-white" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white truncate">
+                          {company.company_name || 'Info Papandayan'}
+                        </p>
+                        <p className="text-[10px] text-emerald-400 truncate font-semibold">
+                          Invoice & Logistik
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500 mt-3 text-center">
+                  Otomatis tersinkronisasi di seluruh menu aplikasi
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Hidden File Inputs */}
+          <input
+            type="file"
+            ref={logoFileInputRef}
+            onChange={(e) => handleUploadLogoFile(e, 'logo')}
+            accept="image/png,image/jpeg,image/svg+xml,image/webp,image/x-icon,image/vnd.microsoft.icon,image/gif"
+            className="hidden"
+          />
+          <input
+            type="file"
+            ref={faviconFileInputRef}
+            onChange={(e) => handleUploadLogoFile(e, 'favicon')}
+            accept="image/png,image/jpeg,image/svg+xml,image/webp,image/x-icon,image/vnd.microsoft.icon,image/gif"
+            className="hidden"
+          />
+
+          {/* BAGIAN 1: Logo Tampilan Awal (Login, Header, & Sidebar) */}
+          <div className="pt-4 border-t border-slate-100 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center">
+                    A
+                  </span>
+                  <span>Logo Utama Aplikasi (Tampilan Awal / Layar Login & Sidebar)</span>
+                </h4>
+                <p className="text-xs text-slate-500 ml-8">
+                  Logo ini muncul di tengah halaman login, header dokumen faktur, dan panel navigasi.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 bg-slate-50/50 p-4 sm:p-5 rounded-2xl border border-slate-200/80">
+              {/* Opsi Upload File Logo */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Unggah File Logo dari Perangkat (Komputer/HP)
+                </label>
+                <div
+                  onClick={() => logoFileInputRef.current?.click()}
+                  className="border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-white hover:bg-emerald-50/40 rounded-xl p-5 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-2 group shadow-2xs"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 group-hover:scale-105 transition">
+                    {isUploadingLogo ? (
+                      <RefreshCw className="w-5 h-5 animate-spin text-emerald-600" />
+                    ) : (
+                      <Upload className="w-5 h-5" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-800">
+                      {isUploadingLogo ? 'Sedang Mengunggah...' : 'Pilih File Logo Baru (PNG, JPG, SVG, WebP)'}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Maksimal ukuran file 8 MB
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Opsi Input URL Logo Manual & Presets */}
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                    Atau Masukkan URL / Path Logo Langsung
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={logoInput}
+                      onChange={(e) => {
+                        setLogoInput(e.target.value);
+                        setLogoPreview(e.target.value.trim());
+                        if (syncFaviconWithLogo) {
+                          setFaviconInput(e.target.value);
+                          setFaviconPreview(e.target.value.trim());
+                        }
+                      }}
+                      placeholder="Contoh: /favicon.svg atau https://..."
+                      className="flex-1 px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-[#136239]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setLogoPreview(logoInput.trim())}
+                      className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-2xs transition cursor-pointer"
+                    >
+                      Tinjau
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                    Pilihan Preset Logo Bawaan:
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLogoInput('/favicon.svg');
+                        setLogoPreview('/favicon.svg');
+                        if (syncFaviconWithLogo) {
+                          setFaviconInput('/favicon.svg');
+                          setFaviconPreview('/favicon.svg');
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold transition cursor-pointer shadow-2xs"
+                    >
+                      <img src="/favicon.svg" alt="Preset 1" className="w-3.5 h-3.5 object-contain" />
+                      <span>Gunung Papandayan (Bawaan)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLogoInput('/invoice-header.svg');
+                        setLogoPreview('/invoice-header.svg');
+                        if (syncFaviconWithLogo) {
+                          setFaviconInput('/invoice-header.svg');
+                          setFaviconPreview('/invoice-header.svg');
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold transition cursor-pointer shadow-2xs"
+                    >
+                      <img src="/invoice-header.svg" alt="Preset 2" className="w-3.5 h-3.5 object-contain" />
+                      <span>Header Banner</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* BAGIAN 2: Ikon Favicon Tab di Browser Web */}
+          <div className="pt-4 border-t border-slate-100 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center justify-center">
+                    B
+                  </span>
+                  <span>Ikon Favicon untuk Tab di Browser Web</span>
+                </h4>
+                <p className="text-xs text-slate-500 ml-8">
+                  Ikon kecil yang muncul di sebelah judul halaman pada bilah tab browser Google Chrome, Safari, dan Edge.
+                </p>
+              </div>
+
+              {/* Toggle Samakan dengan Logo Utama */}
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 bg-emerald-50/70 border border-emerald-200 px-3 py-1.5 rounded-xl cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={syncFaviconWithLogo}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setSyncFaviconWithLogo(checked);
+                    if (checked) {
+                      setFaviconInput(logoInput);
+                      setFaviconPreview(logoPreview || logoInput);
+                    }
+                  }}
+                  className="w-4 h-4 rounded-md accent-[#136239] cursor-pointer"
+                />
+                <span>Samakan dengan Logo Utama Aplikasi</span>
+              </label>
+            </div>
+
+            {!syncFaviconWithLogo && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 bg-slate-50/50 p-4 sm:p-5 rounded-2xl border border-slate-200/80 animate-in fade-in duration-150">
+                {/* Opsi Upload Khusus Favicon */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    Unggah Ikon Favicon Khusus (ICO, PNG, SVG)
+                  </label>
+                  <div
+                    onClick={() => faviconFileInputRef.current?.click()}
+                    className="border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-white hover:bg-emerald-50/40 rounded-xl p-5 text-center cursor-pointer transition flex flex-col items-center justify-center space-y-2 group shadow-2xs"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700 group-hover:scale-105 transition">
+                      {isUploadingFavicon ? (
+                        <RefreshCw className="w-5 h-5 animate-spin text-emerald-600" />
+                      ) : (
+                        <Upload className="w-5 h-5" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-800">
+                        {isUploadingFavicon ? 'Sedang Mengunggah...' : 'Pilih Ikon Favicon Khusus (Disarankan 1:1 Persegi)'}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Mendukung .ico, .svg, .png (ukuran ideal 32x32 atau 64x64 px)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Input URL Favicon */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                      Atau Masukkan URL Ikon Favicon
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={faviconInput}
+                        onChange={(e) => {
+                          setFaviconInput(e.target.value);
+                          setFaviconPreview(e.target.value.trim());
+                        }}
+                        placeholder="Contoh: /favicon.svg atau https://..."
+                        className="flex-1 px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-[#136239]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setFaviconPreview(faviconInput.trim())}
+                        className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-2xs transition cursor-pointer"
+                      >
+                        Tinjau
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                      Pilihan Favicon Bawaan:
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFaviconInput('/favicon.svg');
+                          setFaviconPreview('/favicon.svg');
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold transition cursor-pointer shadow-2xs"
+                      >
+                        <img src="/favicon.svg" alt="Preset Favicon" className="w-3.5 h-3.5 object-contain" />
+                        <span>Ikon Gunung Papandayan (SVG)</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action Bar */}
+          <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-slate-500">
+              {company.logo_url || company.favicon_url ? (
+                <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Logo khusus aktif ({syncFaviconWithLogo ? 'Logo & Tab Tersinkron' : 'Logo & Tab Terpisah'})
+                </span>
+              ) : (
+                <span className="text-slate-400">
+                  Saat ini menggunakan logo standar sistem (/favicon.svg)
+                </span>
+              )}
+            </p>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveLogoUrl}
+                disabled={isSavingLogo || isUploadingLogo || isUploadingFavicon}
+                className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#136239] hover:bg-[#0f4d2d] text-white text-xs font-bold shadow-md shadow-emerald-950/20 cursor-pointer disabled:opacity-50 transition hover:scale-105 active:scale-95"
+              >
+                <Save className="w-4 h-4" />
+                <span>{isSavingLogo ? 'Menyimpan...' : 'Simpan & Terapkan Logo & Tab Browser'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TAB 1: Company Profile */}
       {activeTab === 'company' && (
         <form onSubmit={handleSaveCompany} className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200/80 shadow-xs space-y-6">
@@ -654,6 +1313,29 @@ export const SettingsView: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="sm:col-span-2 flex items-center justify-between p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#136239] flex items-center justify-center p-1 overflow-hidden shrink-0">
+                  {company.logo_url ? (
+                    <img src={company.logo_url} alt="Logo" className="w-full h-full object-contain" />
+                  ) : (
+                    <Building2 className="w-5 h-5 text-white" />
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-800">Logo Aplikasi & Favicon Tab Browser</p>
+                  <p className="text-[11px] text-slate-500">Logo aktif saat ini pada halaman awal, menu, dan tab browser</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('logo')}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer shadow-2xs"
+              >
+                Ganti Logo & Favicon
+              </button>
+            </div>
+
             <div className="sm:col-span-2">
               <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                 Nama Perusahaan / Organisasi *

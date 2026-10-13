@@ -15,6 +15,7 @@ import {
   ChevronRight,
   AlertCircle,
   RotateCcw,
+  RefreshCw,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, formatDateIndo } from '../lib/utils.ts';
@@ -64,6 +65,7 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
 
   // Request sequencing tracker to ignore stale out-of-order responses
   const activeRequestIdRef = useRef(0);
+  const [transientWarning, setTransientWarning] = useState<string | null>(null);
 
   // Preview & Delete states
   const [previewData, setPreviewData] = useState<InvoicePDFData | null>(null);
@@ -90,7 +92,6 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
     const currentReqId = ++activeRequestIdRef.current;
     if (!isBackground) {
       setLoading(true);
-      setLoadError(null);
     }
 
     try {
@@ -102,28 +103,60 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
       query.set('page', page.toString());
       query.set('limit', '10');
 
-      const res = await apiRequest(`/api/invoices?${query.toString()}`);
+      let res = await apiRequest(`/api/invoices?${query.toString()}`);
+
+      // Auto-retry up to 3 attempts with increasing backoff before giving up
+      let attempt = 1;
+      while (!res.success && attempt < 3 && currentReqId === activeRequestIdRef.current) {
+        attempt++;
+        await new Promise((r) => setTimeout(r, attempt === 2 ? 400 : 800));
+        if (currentReqId === activeRequestIdRef.current) {
+          res = await apiRequest(`/api/invoices?${query.toString()}`);
+        }
+      }
+
       if (currentReqId !== activeRequestIdRef.current) return; // Stale request, ignore
 
       if (res.success && Array.isArray(res.data)) {
         setInvoices(res.data);
         setLoadError(null);
+        setTransientWarning(null);
         if (res.pagination) {
-          setTotalPages(Math.max(1, res.pagination.totalPages || 1));
+          const tp = Math.max(1, res.pagination.totalPages || 1);
+          setTotalPages(tp);
           setTotalCount(res.pagination.total || 0);
+          if (page > tp && tp >= 1) {
+            setPage(1);
+          }
         }
       } else {
-        const errMsg = res.message || 'Gagal memuat invoice';
-        if (!isBackground) {
-          setLoadError(errMsg);
+        const errMsg = res.message || 'Gagal memuat invoice dari server';
+        // If we already have invoices cached on screen, DO NOT wipe out the table!
+        setInvoices((prev) => {
+          if (prev.length > 0) {
+            setTransientWarning(errMsg);
+            return prev;
+          } else {
+            if (!isBackground) setLoadError(errMsg);
+            return prev;
+          }
+        });
+        if (!isBackground && invoices.length === 0) {
           toast.error(errMsg);
         }
       }
     } catch (err: any) {
-      if (currentReqId === activeRequestIdRef.current && !isBackground) {
+      if (currentReqId === activeRequestIdRef.current) {
         const errMsg = err?.message || 'Gagal terhubung ke server';
-        setLoadError(errMsg);
-        toast.error('Gagal memuat invoice: ' + errMsg);
+        setInvoices((prev) => {
+          if (prev.length > 0) {
+            setTransientWarning(errMsg);
+            return prev;
+          } else {
+            if (!isBackground) setLoadError(errMsg);
+            return prev;
+          }
+        });
       }
     } finally {
       if (currentReqId === activeRequestIdRef.current) {
@@ -138,9 +171,18 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
 
   useEffect(() => {
     const handleSync = () => loadInvoices(true);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadInvoices(true);
+      }
+    };
     window.addEventListener('database_synced', handleSync);
+    window.addEventListener('invoices_updated', handleSync);
+    document.addEventListener('visibilitychange', handleVisibility);
     return () => {
       window.removeEventListener('database_synced', handleSync);
+      window.removeEventListener('invoices_updated', handleSync);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [debouncedSearch, statusFilter, startDate, endDate, page]);
 
@@ -293,6 +335,16 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2.5">
           <button
+            onClick={() => loadInvoices(false)}
+            disabled={loading}
+            title="Muat ulang dan sinkronkan daftar invoice terbaru"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 ${loading ? 'animate-spin' : ''}`} />
+            <span>{loading ? 'Menyinkronkan...' : 'Segarkan Data'}</span>
+          </button>
+
+          <button
             onClick={handleExportExcel}
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition cursor-pointer"
           >
@@ -428,6 +480,22 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
               <span>Hapus ({selectedInvoiceIds.length}) Terpilih</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Transient Warning Banner if background sync had hiccup while showing cached invoices */}
+      {transientWarning && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>Koneksi server sempat terganggu ({transientWarning}). Menampilkan data invoice yang tersimpan.</span>
+          </div>
+          <button
+            onClick={() => loadInvoices(false)}
+            className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold transition cursor-pointer text-xs shrink-0 shadow-2xs"
+          >
+            Segarkan Data
+          </button>
         </div>
       )}
 

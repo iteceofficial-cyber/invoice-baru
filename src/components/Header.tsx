@@ -8,6 +8,7 @@ interface HeaderProps {
   currentTab: NavTab;
   onNavigate: (tab: NavTab) => void;
   companyName?: string;
+  logoUrl?: string;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -15,9 +16,15 @@ export const Header: React.FC<HeaderProps> = ({
   currentTab,
   onNavigate,
   companyName = 'Info Papandayan',
+  logoUrl,
 }) => {
   const { user } = useAuth();
+  const [logoLoadError, setLogoLoadError] = React.useState(false);
   const [isSyncing, setIsSyncing] = React.useState(false);
+
+  React.useEffect(() => {
+    setLogoLoadError(false);
+  }, [logoUrl]);
 
   const handleManualSync = async () => {
     if (isSyncing) return;
@@ -76,9 +83,18 @@ export const Header: React.FC<HeaderProps> = ({
             {getPageTitle(currentTab)}
           </h2>
           <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
-            <span className="flex items-center gap-1">
-              <Building2 className="w-3.5 h-3.5 text-[#136239]" />
-              {companyName}
+            <span className="flex items-center gap-1.5">
+              {logoUrl && !logoLoadError ? (
+                <img
+                  src={logoUrl}
+                  alt={companyName}
+                  className="w-4 h-4 rounded-xs object-contain"
+                  onError={() => setLogoLoadError(true)}
+                />
+              ) : (
+                <Building2 className="w-3.5 h-3.5 text-[#136239]" />
+              )}
+              <span>{companyName}</span>
             </span>
             <span className="text-slate-300">•</span>
             <button

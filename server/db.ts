@@ -206,12 +206,26 @@ export function getCurrentDbVersion(): number {
   return currentDbVersion;
 }
 
+// Strict timeout wrapper for Firestore calls to prevent Node.js gRPC retry hangs
+async function withFirestoreTimeout<T>(promise: Promise<T>, timeoutMs = 3500): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Firestore operation timed out')), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 let syncCheckMutex: Promise<void> | null = null;
 
 export async function checkAndSyncFromFirestore(force = false): Promise<void> {
-  if (!firestoreDb || isFirestoreQuotaExhausted) return;
+  // If cloud not configured, quota exhausted, or a local save/upload is currently in flight, do not sync
+  if (!firestoreDb || isFirestoreQuotaExhausted || isSavingToFirestore) return;
   const now = Date.now();
-  if (!force && now - lastCheckTime < 1500) return; // Check at most once every 1.5s
+  if (!force && now - lastCheckTime < 5000) return; // Check at most once every 5s
   lastCheckTime = now;
 
   if (syncCheckMutex) {
@@ -220,17 +234,18 @@ export async function checkAndSyncFromFirestore(force = false): Promise<void> {
 
   syncCheckMutex = (async () => {
     try {
-      // Force read directly from server to bypass any stale local cache across containers/links
-      const metaSnap = await getDocFromServer(doc(firestoreDb, 'system', 'database_meta'));
-      if (!metaSnap.exists()) return;
+      if (isSavingToFirestore || !firestoreDb || isFirestoreQuotaExhausted) return;
+      // Force read directly from server with strict timeout
+      const metaSnap = await withFirestoreTimeout(getDocFromServer(doc(firestoreDb, 'system', 'database_meta')), 3000);
+      if (!metaSnap || !metaSnap.exists()) return;
       const meta = metaSnap.data();
       const cloudVersion = meta?.version || 0;
 
-      // Compare directly against in-memory currentDbVersion to ensure multi-device sync
-      if (cloudVersion > currentDbVersion) {
+      // Only pull if cloud version is strictly newer than our in-memory version AND no save is active
+      if (cloudVersion > currentDbVersion && !isSavingToFirestore) {
         console.log(`[Firebase Cloud] Snapshot cloud lebih baru terdeteksi (v${cloudVersion} > v${currentDbVersion}). Mengunduh ke memori...`);
         const cloudBuffer = await loadFromFirestore();
-        if (cloudBuffer && sqlJsEngine) {
+        if (cloudBuffer && sqlJsEngine && !isSavingToFirestore) {
           try {
             const testDb = new sqlJsEngine.Database(cloudBuffer);
             const check = testDb.exec('PRAGMA integrity_check;');
@@ -252,7 +267,14 @@ export async function checkAndSyncFromFirestore(force = false): Promise<void> {
       }
     } catch (err: any) {
       const msg = String(err?.message || err);
-      if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota limit') || err?.code === 'resource-exhausted') {
+      if (
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('Quota limit') ||
+        msg.includes('timed out') ||
+        msg.includes('Quota exceeded') ||
+        err?.code === 'resource-exhausted' ||
+        err?.code === 8
+      ) {
         markQuotaExhausted();
       }
     }
@@ -283,25 +305,32 @@ export async function syncToFirestore(): Promise<void> {
     const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
     const newVersion = Date.now();
 
-    // 1. Write all chunks FIRST
+    currentDbVersion = newVersion;
+
+    // 1. Write all chunks FIRST with timeout protection
     for (let i = 0; i < totalChunks; i++) {
       const chunk = base64.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      await setDoc(doc(firestoreDb, 'system', `database_chunk_${i}`), {
-        chunk_index: i,
-        data: chunk,
-        updated_at: new Date().toISOString(),
-      });
+      await withFirestoreTimeout(
+        setDoc(doc(firestoreDb, 'system', `database_chunk_${i}`), {
+          chunk_index: i,
+          data: chunk,
+          updated_at: new Date().toISOString(),
+        }),
+        3500
+      );
     }
 
     // 2. Only write metadata AFTER all chunks succeed
-    await setDoc(doc(firestoreDb, 'system', 'database_meta'), {
-      total_chunks: totalChunks,
-      total_bytes: data.byteLength,
-      updated_at: new Date().toISOString(),
-      version: newVersion,
-    });
+    await withFirestoreTimeout(
+      setDoc(doc(firestoreDb, 'system', 'database_meta'), {
+        total_chunks: totalChunks,
+        total_bytes: data.byteLength,
+        updated_at: new Date().toISOString(),
+        version: newVersion,
+      }),
+      3500
+    );
 
-    currentDbVersion = newVersion;
     console.log(
       `[Firebase Cloud] Basis data berhasil dicadangkan ke Cloud Firestore (v${newVersion}, ${(data.byteLength / 1024).toFixed(1)} KB)`
     );
@@ -310,6 +339,7 @@ export async function syncToFirestore(): Promise<void> {
     if (
       msg.includes('RESOURCE_EXHAUSTED') ||
       msg.includes('Quota limit') ||
+      msg.includes('timed out') ||
       msg.includes('Quota exceeded') ||
       err?.code === 'resource-exhausted' ||
       err?.code === 8
@@ -332,14 +362,14 @@ export async function syncToFirestore(): Promise<void> {
 export async function loadFromFirestore(): Promise<Buffer | null> {
   if (!firestoreDb || isFirestoreQuotaExhausted) return null;
   try {
-    const metaSnap = await getDocFromServer(doc(firestoreDb, 'system', 'database_meta'));
-    if (!metaSnap.exists()) return null;
+    const metaSnap = await withFirestoreTimeout(getDocFromServer(doc(firestoreDb, 'system', 'database_meta')), 3000);
+    if (!metaSnap || !metaSnap.exists()) return null;
     const meta = metaSnap.data();
     const totalChunks = meta?.total_chunks || 1;
     let fullBase64 = '';
     for (let i = 0; i < totalChunks; i++) {
-      const chunkSnap = await getDocFromServer(doc(firestoreDb, 'system', `database_chunk_${i}`));
-      if (!chunkSnap.exists()) {
+      const chunkSnap = await withFirestoreTimeout(getDocFromServer(doc(firestoreDb, 'system', `database_chunk_${i}`)), 3000);
+      if (!chunkSnap || !chunkSnap.exists()) {
         console.warn(`[Firebase Cloud] Chunk ${i} tidak ditemukan di Cloud Firestore.`);
         return null;
       }
@@ -367,8 +397,15 @@ export async function loadFromFirestore(): Promise<Buffer | null> {
     }
   } catch (err: any) {
     const msg = String(err?.message || err);
-    if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota limit') || err?.code === 'resource-exhausted') {
-      isFirestoreQuotaExhausted = true;
+    if (
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.includes('Quota limit') ||
+      msg.includes('timed out') ||
+      msg.includes('Quota exceeded') ||
+      err?.code === 'resource-exhausted' ||
+      err?.code === 8
+    ) {
+      markQuotaExhausted();
     }
   }
   return null;
@@ -542,51 +579,72 @@ export async function saveAndSyncDb(): Promise<void> {
 
 // Helper to execute select queries and return array of objects safely
 export function queryAll<T = any>(sql: string, params: any[] = []): T[] {
-  if (!dbInstance) throw new Error('Database not initialized');
-  let stmt: any = null;
-  try {
-    stmt = dbInstance.prepare(sql);
-    stmt.bind(params);
-    const results: T[] = [];
-    while (stmt.step()) {
-      results.push(stmt.getAsObject() as T);
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (!dbInstance) {
+      if (attempt === 1) continue;
+      throw new Error('Database not initialized');
     }
-    return results;
-  } catch (err: any) {
-    if (err?.message?.includes('malformed') || err?.message?.includes('corrupt')) {
-      console.error('[Database CRITICAL] Deteksi database malformed saat queryAll, memulihkan dari disk...');
-      const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
-      if (targetFile && sqlJsEngine) {
-        const fileBuffer = fs.readFileSync(targetFile);
-        const recoveredDb = new sqlJsEngine.Database(fileBuffer);
-        const check = recoveredDb.exec('PRAGMA integrity_check;');
-        if (check[0]?.values[0]?.[0] === 'ok') {
-          dbInstance = recoveredDb;
-          let retryStmt: any = null;
+
+    let stmt: any = null;
+    try {
+      stmt = dbInstance.prepare(sql);
+      stmt.bind(params);
+      const results: T[] = [];
+      while (stmt.step()) {
+        results.push(stmt.getAsObject() as T);
+      }
+      return results;
+    } catch (err: any) {
+      lastError = err;
+      if (stmt) {
+        try { stmt.free(); } catch (e) {}
+        stmt = null;
+      }
+
+      if (err?.message?.includes('malformed') || err?.message?.includes('corrupt')) {
+        console.error('[Database CRITICAL] Deteksi database malformed saat queryAll, memulihkan dari disk...');
+        const targetFile = fs.existsSync(DB_FILE) ? DB_FILE : fs.existsSync(SEED_FILE) ? SEED_FILE : null;
+        if (targetFile && sqlJsEngine) {
           try {
-            retryStmt = recoveredDb.prepare(sql);
-            retryStmt.bind(params);
-            const retryResults: T[] = [];
-            while (retryStmt.step()) {
-              retryResults.push(retryStmt.getAsObject() as T);
+            const fileBuffer = fs.readFileSync(targetFile);
+            const recoveredDb = new sqlJsEngine.Database(fileBuffer);
+            const check = recoveredDb.exec('PRAGMA integrity_check;');
+            if (check[0]?.values[0]?.[0] === 'ok') {
+              dbInstance = recoveredDb;
+              let retryStmt: any = null;
+              try {
+                retryStmt = recoveredDb.prepare(sql);
+                retryStmt.bind(params);
+                const retryResults: T[] = [];
+                while (retryStmt.step()) {
+                  retryResults.push(retryStmt.getAsObject() as T);
+                }
+                return retryResults;
+              } finally {
+                if (retryStmt) {
+                  try { retryStmt.free(); } catch (e) {}
+                }
+              }
             }
-            return retryResults;
-          } finally {
-            if (retryStmt) {
-              try { retryStmt.free(); } catch (e) {}
-            }
-          }
+          } catch (e) {}
         }
       }
-    }
-    throw err;
-  } finally {
-    if (stmt) {
-      try {
-        stmt.free();
-      } catch (e) {}
+
+      if (attempt === 2) {
+        throw lastError;
+      }
+    } finally {
+      if (stmt) {
+        try {
+          stmt.free();
+        } catch (e) {}
+      }
     }
   }
+
+  throw lastError || new Error('Gagal menjalankan kueri database');
 }
 
 // Helper to execute single row query
@@ -794,6 +852,9 @@ function initSchemaAndSeed(db: Database, isBrandNewDb: boolean = false) {
     );
   `);
 
+  try {
+    db.run(`ALTER TABLE company_settings ADD COLUMN favicon_url TEXT;`);
+  } catch (e) {}
   try {
     db.run(`ALTER TABLE invoice_settings ADD COLUMN header_image_url TEXT DEFAULT '/invoice-header.svg';`);
   } catch (e) {}
