@@ -36,6 +36,8 @@ interface InvoiceRow {
   total_qty: number;
   created_at: string;
   created_by_name?: string;
+  items_summary?: string;
+  items?: any[];
 }
 
 interface InvoicesListViewProps {
@@ -308,13 +310,18 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
 
   const handleExportExcel = async () => {
     try {
-      const res = await apiRequest('/api/invoices?limit=2000');
-      if (res.success && res.data && res.data.length > 0) {
+      const res = await apiRequest('/api/invoices/export-data');
+      if (res.success && Array.isArray(res.data) && res.data.length > 0) {
         exportInvoicesListExcel(res.data);
       } else {
-        exportInvoicesListExcel(invoices);
+        const fallbackRes = await apiRequest('/api/invoices?limit=2000');
+        if (fallbackRes.success && Array.isArray(fallbackRes.data) && fallbackRes.data.length > 0) {
+          exportInvoicesListExcel(fallbackRes.data);
+        } else {
+          exportInvoicesListExcel(invoices);
+        }
       }
-      toast.success('Daftar invoice berhasil diekspor ke Excel!');
+      toast.success('Laporan Excel invoice dan rekapitulasi barang keluar berhasil diunduh!');
     } catch {
       exportInvoicesListExcel(invoices);
     }
@@ -520,7 +527,7 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                 <th className="py-3.5 px-4 font-semibold">Nomor Invoice</th>
                 <th className="py-3.5 px-5 font-semibold">Pelanggan / Klien</th>
                 <th className="py-3.5 px-4 font-semibold">Tanggal Kegiatan</th>
-                <th className="py-3.5 px-4 font-semibold text-center">Jml Barang</th>
+                <th className="py-3.5 px-4 font-semibold">Rincian Barang Dipesan</th>
                 <th className="py-3.5 px-4 font-semibold text-right">Total Tagihan</th>
                 <th className="py-3.5 px-4 font-semibold text-center">Status</th>
                 <th className="py-3.5 px-5 font-semibold text-right">Aksi</th>
@@ -579,6 +586,9 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
               ) : (
                 invoices.map((inv) => {
                   const isSelected = selectedInvoiceIds.includes(inv.id);
+                  const itemsList = inv.items_summary
+                    ? inv.items_summary.split(',').map((s: string) => s.trim()).filter(Boolean)
+                    : [];
                   return (
                     <tr
                       key={inv.id}
@@ -610,10 +620,27 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
                       <td className="py-4 px-4 text-slate-600 text-xs font-medium">
                         {formatDateIndo(inv.activity_date)}
                       </td>
-                      <td className="py-4 px-4 text-center">
-                        <span className="text-xs font-semibold text-slate-700">
-                          {inv.item_count || 1} jenis (Qty: {inv.total_qty || 0})
-                        </span>
+                      <td className="py-4 px-4 min-w-[200px]">
+                        <div className="text-xs font-bold text-slate-800">
+                          {inv.item_count || 1} jenis <span className="font-normal text-slate-500">(Total: {inv.total_qty || 0} unit)</span>
+                        </div>
+                        {itemsList.length > 0 && (
+                          <div className="mt-1.5 space-y-1 text-left">
+                            {itemsList.slice(0, 4).map((clean: string, itIdx: number) => (
+                              <div key={itIdx} className="text-[11px] text-slate-600 flex items-center gap-1.5 leading-tight">
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#136239] shrink-0" />
+                                <span className="font-medium text-slate-700 truncate max-w-[220px]" title={clean}>
+                                  {clean}
+                                </span>
+                              </div>
+                            ))}
+                            {itemsList.length > 4 && (
+                              <div className="text-[10px] text-slate-400 font-medium pl-3">
+                                +{itemsList.length - 4} barang lainnya...
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="py-4 px-4 text-right font-extrabold text-slate-900 text-sm">
                         {formatRupiah(inv.total_amount)}

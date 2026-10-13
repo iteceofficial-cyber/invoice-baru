@@ -1384,6 +1384,7 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
           SELECT i.*, 
                  COALESCE(COUNT(ii.id), 0) as item_count, 
                  COALESCE(SUM(ii.qty), 0) as total_qty, 
+                 COALESCE(GROUP_CONCAT(ii.product_name || ' (' || ii.qty || ' ' || ii.unit || ')', ', '), '') as items_summary,
                  COALESCE(u.full_name, 'Admin') as created_by_name
           FROM invoices i
           LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
@@ -1415,6 +1416,7 @@ apiRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Respons
       total_amount: Number(inv.total_amount) || 0,
       item_count: Number(inv.item_count) || 0,
       total_qty: Number(inv.total_qty) || 0,
+      items_summary: inv.items_summary || '',
       customer_name: inv.customer_name || 'Pelanggan',
       invoice_number: inv.invoice_number || `INV-${inv.id}`,
       status: inv.status || 'paid',
@@ -2619,40 +2621,295 @@ apiRouter.post('/invoices/bulk-delete', requireAuth, (req: AuthenticatedRequest,
   }
 });
 
-// Export invoices list to Excel
-apiRouter.get('/invoices/export', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+// 1. Export data endpoint with full items array for client-side processing
+apiRouter.get('/invoices/export-data', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const invoices = queryAll(`
-      SELECT i.invoice_number, i.customer_name, i.activity_date, i.subtotal, i.discount_amount,
-             i.tax_amount, i.total_amount, i.status, COUNT(ii.id) as item_count, SUM(ii.qty) as total_qty
+    const invoices = queryAll<any>(`
+      SELECT i.*,
+             COALESCE(COUNT(ii.id), 0) as item_count,
+             COALESCE(SUM(ii.qty), 0) as total_qty,
+             COALESCE(GROUP_CONCAT(ii.product_name || ' (' || ii.qty || ' ' || ii.unit || ')', ', '), '') as items_summary
       FROM invoices i
       LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
       GROUP BY i.id
       ORDER BY i.id DESC
     `);
 
-    const exportData = invoices.map((inv, idx) => ({
-      No: idx + 1,
-      'Nomor Invoice': inv.invoice_number,
-      'Nama Klien / Penerima': inv.customer_name,
-      'Tanggal Kegiatan': inv.activity_date,
-      'Jumlah Jenis Barang': inv.item_count,
-      'Total Qty Barang': inv.total_qty,
-      'Subtotal (Rp)': inv.subtotal,
-      'Diskon (Rp)': inv.discount_amount,
-      'PPN / Pajak (Rp)': inv.tax_amount,
-      'Total Nilai (Rp)': inv.total_amount,
-      Status: inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft',
+    const allItems = queryAll<any>(`
+      SELECT ii.*, i.invoice_number, i.customer_name, i.activity_date
+      FROM invoice_items ii
+      JOIN invoices i ON ii.invoice_id = i.id
+      ORDER BY ii.invoice_id DESC, ii.id ASC
+    `);
+
+    const itemsByInvoice = new Map<number, any[]>();
+    for (const it of allItems) {
+      const list = itemsByInvoice.get(it.invoice_id) || [];
+      list.push(it);
+      itemsByInvoice.set(it.invoice_id, list);
+    }
+
+    const fullInvoices = invoices.map((inv) => ({
+      ...inv,
+      items: itemsByInvoice.get(inv.id) || [],
     }));
 
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    return res.json({
+      success: true,
+      data: fullInvoices,
+      allItems,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal memuat data ekspor: ' + err.message });
+  }
+});
+
+// 2. Direct server-side download of multi-sheet Invoices & Outgoing Items Excel
+apiRouter.get('/invoices/export', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const invoices = queryAll<any>(`
+      SELECT i.id, i.invoice_number, i.customer_name, i.activity_date, i.subtotal, i.discount_amount,
+             i.tax_amount, i.total_amount, i.status,
+             COALESCE(COUNT(ii.id), 0) as item_count,
+             COALESCE(SUM(ii.qty), 0) as total_qty,
+             COALESCE(GROUP_CONCAT(ii.product_name || ' (' || ii.qty || ' ' || ii.unit || ')', ', '), '') as items_summary
+      FROM invoices i
+      LEFT JOIN invoice_items ii ON i.id = ii.invoice_id
+      GROUP BY i.id
+      ORDER BY i.id DESC
+    `);
+
+    const items = queryAll<any>(`
+      SELECT i.activity_date as tanggal, i.invoice_number, i.customer_name as nama_pelanggan,
+             ii.product_code as kode_produk, ii.product_name as nama_barang,
+             ii.qty as jumlah, ii.unit as satuan, ii.price as harga, ii.subtotal as total_nilai,
+             i.status as invoice_status
+      FROM invoice_items ii
+      JOIN invoices i ON ii.invoice_id = i.id
+      ORDER BY i.activity_date DESC, ii.id DESC
+    `);
+
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Daftar Invoice');
+
+    // Sheet 1: Rincian Lengkap Barang Dipesan ke Bawah (Setiap Barang Baris Sendiri)
+    const itemRows = items.map((it, idx) => ({
+      'No': idx + 1,
+      'Tanggal Transaksi': it.tanggal || '-',
+      'Nomor Invoice': it.invoice_number || '-',
+      'Nama Pelanggan': it.nama_pelanggan || '-',
+      'Kode Produk': it.kode_produk || '-',
+      'Nama Barang yang Dipesan': it.nama_barang || '-',
+      'Jumlah (Qty)': it.jumlah || 0,
+      'Satuan': it.satuan || 'Pcs',
+      'Harga Satuan (Rp)': it.harga || 0,
+      'Total Nilai (Rp)': it.total_nilai || 0,
+      'Status': it.invoice_status === 'paid' ? 'Lunas' : it.invoice_status === 'pending' ? 'Menunggu' : 'Draft',
+    }));
+
+    const wsSheet1 = XLSX.utils.json_to_sheet(
+      itemRows.length > 0
+        ? itemRows
+        : [
+            {
+              'No': '-',
+              'Tanggal Transaksi': '-',
+              'Nomor Invoice': '-',
+              'Nama Pelanggan': '-',
+              'Kode Produk': '-',
+              'Nama Barang yang Dipesan': 'Belum ada data barang',
+              'Jumlah (Qty)': 0,
+              'Satuan': '-',
+              'Harga Satuan (Rp)': 0,
+              'Total Nilai (Rp)': 0,
+              'Status': '-',
+            },
+          ]
+    );
+
+    wsSheet1['!cols'] = [
+      { wch: 6 },
+      { wch: 16 },
+      { wch: 22 },
+      { wch: 28 },
+      { wch: 15 },
+      { wch: 40 },
+      { wch: 14 },
+      { wch: 10 },
+      { wch: 18 },
+      { wch: 20 },
+      { wch: 14 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsSheet1, 'Rincian Barang (Ke Bawah)');
+
+    // Sheet 2: Format Faktur & Barang ke Bawah (Visual / Hierarki Faktur)
+    const groupedAoa: any[][] = [
+      ['LAPORAN RINCIAN FAKTUR & DAFTAR BARANG YANG DIPESAN'],
+      ['Info Papandayan - Sistem Logistik & Invoice'],
+      ['Tanggal Unduh:', new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })],
+      [''],
+    ];
+
+    invoices.forEach((inv, invIdx) => {
+      const invItems = items.filter((it) => it.invoice_number === inv.invoice_number);
+      const statusText = inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft';
+      const totalAmount = Number(inv.total_amount) || 0;
+
+      groupedAoa.push([
+        `#${invIdx + 1}`,
+        `FAKTUR: ${inv.invoice_number}`,
+        `TANGGAL: ${inv.activity_date || '-'}`,
+        `PELANGGAN: ${inv.customer_name || '-'}`,
+        `STATUS: ${statusText}`,
+        `TOTAL: Rp ${totalAmount.toLocaleString('id-ID')}`,
+      ]);
+
+      groupedAoa.push([
+        '',
+        'No. Item',
+        'Kode Produk',
+        'Nama Barang yang Dipesan',
+        'Jumlah (Qty)',
+        'Satuan',
+        'Harga Satuan (Rp)',
+        'Subtotal (Rp)',
+      ]);
+
+      if (invItems.length > 0) {
+        invItems.forEach((it, iIdx) => {
+          groupedAoa.push([
+            '',
+            iIdx + 1,
+            it.kode_produk || '-',
+            it.nama_barang,
+            it.jumlah,
+            it.satuan || 'Pcs',
+            it.harga,
+            it.total_nilai,
+          ]);
+        });
+      } else if (inv.items_summary) {
+        const parsed = inv.items_summary.split(',').map((s: string) => s.trim()).filter(Boolean);
+        parsed.forEach((pStr: string, iIdx: number) => {
+          groupedAoa.push(['', iIdx + 1, '-', pStr, 1, 'Pcs', iIdx === 0 ? totalAmount : 0, iIdx === 0 ? totalAmount : 0]);
+        });
+      } else {
+        groupedAoa.push(['', 1, '-', 'Rincian produk terlampir', 1, 'Pcs', totalAmount, totalAmount]);
+      }
+
+      groupedAoa.push([
+        '',
+        '',
+        '',
+        `Subtotal Faktur ${inv.invoice_number}:`,
+        inv.total_qty || invItems.reduce((a: number, c: any) => a + (Number(c.jumlah) || 0), 0) || 1,
+        'Unit',
+        '',
+        totalAmount,
+      ]);
+      groupedAoa.push(['']);
+    });
+
+    const wsGrouped = XLSX.utils.aoa_to_sheet(groupedAoa);
+    wsGrouped['!cols'] = [
+      { wch: 8 },
+      { wch: 22 },
+      { wch: 18 },
+      { wch: 38 },
+      { wch: 14 },
+      { wch: 10 },
+      { wch: 18 },
+      { wch: 22 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsGrouped, 'Faktur & Barang (Ke Bawah)');
+
+    // Sheet 3: Rekap Barang Paling Sering Keluar (Top Outgoing Products)
+    const productAggMap = new Map<string, any>();
+    for (const it of items) {
+      const key = (it.nama_barang || '').trim();
+      if (!key) continue;
+      const existing = productAggMap.get(key) || {
+        name: it.nama_barang,
+        code: it.kode_produk || '-',
+        unit: it.satuan || 'Pcs',
+        totalQty: 0,
+        orderCount: 0,
+        totalSales: 0,
+        customers: new Set<string>(),
+      };
+      existing.totalQty += it.jumlah || 0;
+      existing.orderCount += 1;
+      existing.totalSales += it.total_nilai || 0;
+      if (it.nama_pelanggan) existing.customers.add(it.nama_pelanggan.trim());
+      productAggMap.set(key, existing);
+    }
+
+    const topProductsRows = Array.from(productAggMap.values())
+      .sort((a, b) => b.totalQty - a.totalQty)
+      .map((p, idx) => ({
+        Peringkat: idx + 1,
+        'Nama Barang': p.name,
+        'Kode Produk': p.code,
+        'Total Qty Dipesan': p.totalQty,
+        Satuan: p.unit,
+        'Frekuensi Pemesanan': `${p.orderCount} kali transaksi`,
+        'Total Nilai Penjualan (Rp)': p.totalSales,
+        'Daftar Pelanggan Pemesan': Array.from(p.customers).slice(0, 8).join(', ') + (p.customers.size > 8 ? ` (+${p.customers.size - 8} lainnya)` : ''),
+      }));
+
+    const wsTop = XLSX.utils.json_to_sheet(topProductsRows);
+    wsTop['!cols'] = [
+      { wch: 10 },
+      { wch: 38 },
+      { wch: 15 },
+      { wch: 20 },
+      { wch: 12 },
+      { wch: 24 },
+      { wch: 24 },
+      { wch: 45 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsTop, 'Barang Sering Keluar');
+
+    // Sheet 4: Rekap Seluruh Invoice (Rincian Barang ke Bawah dengan Garis Baru)
+    const invoiceRows = invoices.map((inv, idx) => {
+      let summaryOfItems = '';
+      if (inv.items_summary) {
+        summaryOfItems = inv.items_summary.split(',').map((s: string, i: number) => `${i + 1}. ${s.trim()}`).join('\r\n');
+      }
+
+      return {
+        No: idx + 1,
+        'Nomor Invoice': inv.invoice_number,
+        'Tanggal Kegiatan': inv.activity_date,
+        'Nama Pelanggan': inv.customer_name,
+        'Barang yang Dipesan (Ke Bawah)': summaryOfItems || '-',
+        'Total Qty Barang': inv.total_qty,
+        'Subtotal (Rp)': inv.subtotal,
+        'Diskon (Rp)': inv.discount_amount,
+        'PPN (Rp)': inv.tax_amount,
+        'Total Nilai Tagihan (Rp)': inv.total_amount,
+        Status: inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft',
+      };
+    });
+
+    const wsInvoices = XLSX.utils.json_to_sheet(invoiceRows);
+    wsInvoices['!cols'] = [
+      { wch: 6 },
+      { wch: 22 },
+      { wch: 16 },
+      { wch: 28 },
+      { wch: 45 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 22 },
+      { wch: 14 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsInvoices, 'Rekap Seluruh Invoice');
 
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="Daftar-Invoice-${new Date().toISOString().split('T')[0]}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Laporan-Invoice-dan-Barang-Keluar-${new Date().toISOString().split('T')[0]}.xlsx"`);
     return res.send(buffer);
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal mengekspor invoice: ' + err.message });
@@ -2837,23 +3094,161 @@ apiRouter.get('/reports/items-out/export', requireAuth, (req: AuthenticatedReque
 
     const items = queryAll(dataQuery, params);
 
+    const workbook = XLSX.utils.book_new();
+
+    // Sheet 1: Rincian Lengkap Barang yang Dipesan oleh Pelanggan
     const exportData = items.map((it, idx) => ({
       No: idx + 1,
-      Tanggal: it.tanggal,
+      'Tanggal Transaksi': it.tanggal,
       'Nomor Invoice': it.nomor_invoice,
       'Nama Pelanggan': it.nama_pelanggan,
-      'Kode Produk': it.kode_produk,
-      'Nama Barang': it.nama_barang,
+      'Kode Produk': it.kode_produk || '-',
+      'Nama Barang yang Dipesan': it.nama_barang,
       Kategori: it.kategori || '-',
-      'Qty Keluar': it.jumlah,
-      Satuan: it.satuan,
+      'Jumlah (Qty)': it.jumlah,
+      Satuan: it.satuan || 'Pcs',
       'Harga Satuan (Rp)': it.harga,
       'Total Nilai (Rp)': it.total_nilai,
     }));
 
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Barang Keluar');
+    const wsDetails = XLSX.utils.json_to_sheet(
+      exportData.length > 0
+        ? exportData
+        : [
+            {
+              No: '-',
+              'Tanggal Transaksi': '-',
+              'Nomor Invoice': '-',
+              'Nama Pelanggan': '-',
+              'Kode Produk': '-',
+              'Nama Barang yang Dipesan': 'Belum ada data barang keluar',
+              Kategori: '-',
+              'Jumlah (Qty)': 0,
+              Satuan: '-',
+              'Harga Satuan (Rp)': 0,
+              'Total Nilai (Rp)': 0,
+            },
+          ]
+    );
+
+    wsDetails['!cols'] = [
+      { wch: 6 },
+      { wch: 16 },
+      { wch: 24 },
+      { wch: 28 },
+      { wch: 15 },
+      { wch: 38 },
+      { wch: 20 },
+      { wch: 14 },
+      { wch: 10 },
+      { wch: 18 },
+      { wch: 20 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsDetails, 'Rincian Pesanan Pelanggan');
+
+    // Sheet 2: Rekap Barang Paling Sering Keluar (Top Outgoing Products)
+    const productAggMap = new Map<string, any>();
+    for (const it of items) {
+      const key = (it.nama_barang || '').trim();
+      if (!key) continue;
+      const existing = productAggMap.get(key) || {
+        name: it.nama_barang,
+        code: it.kode_produk || '-',
+        category: it.kategori || '-',
+        unit: it.satuan || 'Pcs',
+        totalQty: 0,
+        orderCount: 0,
+        totalSales: 0,
+        customers: new Set<string>(),
+      };
+      existing.totalQty += it.jumlah || 0;
+      existing.orderCount += 1;
+      existing.totalSales += it.total_nilai || 0;
+      if (it.nama_pelanggan) existing.customers.add(it.nama_pelanggan.trim());
+      productAggMap.set(key, existing);
+    }
+
+    const topProductsRows = Array.from(productAggMap.values())
+      .sort((a, b) => b.totalQty - a.totalQty)
+      .map((p, idx) => ({
+        Peringkat: idx + 1,
+        'Nama Barang': p.name,
+        'Kode Produk': p.code,
+        Kategori: p.category,
+        'Total Qty Dipesan': p.totalQty,
+        Satuan: p.unit,
+        'Frekuensi Pemesanan': `${p.orderCount} transaksi`,
+        'Total Nilai Penjualan (Rp)': p.totalSales,
+        'Daftar Pelanggan Pemesan': Array.from(p.customers).slice(0, 8).join(', ') + (p.customers.size > 8 ? ` (+${p.customers.size - 8} lainnya)` : ''),
+      }));
+
+    const wsTop = XLSX.utils.json_to_sheet(topProductsRows);
+    wsTop['!cols'] = [
+      { wch: 10 },
+      { wch: 38 },
+      { wch: 15 },
+      { wch: 20 },
+      { wch: 20 },
+      { wch: 12 },
+      { wch: 22 },
+      { wch: 24 },
+      { wch: 45 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsTop, 'Barang Sering Keluar');
+
+    // Sheet 3: Rekap Pesanan Per Pelanggan
+    const customerAggMap = new Map<string, any>();
+    for (const it of items) {
+      const custName = (it.nama_pelanggan || 'Pelanggan Umum').trim();
+      const existing = customerAggMap.get(custName) || {
+        customerName: custName,
+        itemsList: new Map(),
+        totalInvoices: new Set(),
+        totalQty: 0,
+        totalSpent: 0,
+      };
+
+      if (it.nomor_invoice) existing.totalInvoices.add(it.nomor_invoice);
+      existing.totalQty += it.jumlah || 0;
+      existing.totalSpent += it.total_nilai || 0;
+
+      const prodKey = it.nama_barang || 'Barang';
+      const prodExisting = existing.itemsList.get(prodKey) || { qty: 0, unit: it.satuan || 'Pcs' };
+      prodExisting.qty += it.jumlah || 0;
+      existing.itemsList.set(prodKey, prodExisting);
+
+      customerAggMap.set(custName, existing);
+    }
+
+    const customerAggRows = Array.from(customerAggMap.values())
+      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .map((c, idx) => {
+        const formattedItems = Array.from(c.itemsList.entries())
+          .map(([name, data]: any) => `${name} (${data.qty} ${data.unit})`)
+          .join('; ');
+
+        return {
+          No: idx + 1,
+          'Nama Pelanggan': c.customerName,
+          'Daftar Barang & Jumlah Dipesan': formattedItems,
+          'Jumlah Jenis Barang': c.itemsList.size,
+          'Total Kuantitas (Qty)': c.totalQty,
+          'Total Transaksi Invoice': c.totalInvoices.size,
+          'Total Nilai Belanja (Rp)': c.totalSpent,
+        };
+      });
+
+    const wsCustomers = XLSX.utils.json_to_sheet(customerAggRows);
+    wsCustomers['!cols'] = [
+      { wch: 6 },
+      { wch: 30 },
+      { wch: 60 },
+      { wch: 20 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 24 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsCustomers, 'Rekap Pesanan Per Pelanggan');
 
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
@@ -3096,26 +3491,46 @@ apiRouter.put('/settings/company', requireAuth, (req: AuthenticatedRequest, res:
     const finalLogoUrl = logo_url !== undefined ? (logo_url || '').trim() : (currentComp?.logo_url || '');
     const finalFaviconUrl = favicon_url !== undefined ? (favicon_url || '').trim() : (currentComp?.favicon_url || finalLogoUrl);
 
-    runQuery(
-      `UPDATE company_settings
-       SET company_name = ?, logo_url = ?, favicon_url = ?, address = ?, phone = ?, email = ?, website = ?,
-           bank_account_no = ?, bank_name = ?, bank_account_name = ?, updated_at = datetime('now', 'localtime')
-       WHERE id = 1`,
-      [
-        company_name.trim(),
-        finalLogoUrl,
-        finalFaviconUrl,
-        address?.trim() || '',
-        phone?.trim() || '',
-        email?.trim() || '',
-        website?.trim() || '',
-        finalBankAcc,
-        finalBankName,
-        finalBankOwner,
-      ]
-    );
+    if (!currentComp) {
+      runQuery(
+        `INSERT INTO company_settings (id, company_name, logo_url, favicon_url, address, phone, email, website, bank_account_no, bank_name, bank_account_name, created_at, updated_at)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+        [
+          company_name.trim(),
+          finalLogoUrl,
+          finalFaviconUrl,
+          address?.trim() || '',
+          phone?.trim() || '',
+          email?.trim() || '',
+          website?.trim() || '',
+          finalBankAcc,
+          finalBankName,
+          finalBankOwner,
+        ]
+      );
+    } else {
+      runQuery(
+        `UPDATE company_settings
+         SET company_name = ?, logo_url = ?, favicon_url = ?, address = ?, phone = ?, email = ?, website = ?,
+             bank_account_no = ?, bank_name = ?, bank_account_name = ?, updated_at = datetime('now', 'localtime')
+         WHERE id = 1`,
+        [
+          company_name.trim(),
+          finalLogoUrl,
+          finalFaviconUrl,
+          address?.trim() || '',
+          phone?.trim() || '',
+          email?.trim() || '',
+          website?.trim() || '',
+          finalBankAcc,
+          finalBankName,
+          finalBankOwner,
+        ]
+      );
+    }
 
-    saveDb(true);
+    saveDb(false);
+    syncToFirestore().catch((e) => console.warn('[Background Cloud Sync Note]:', e));
 
     logActivity(
       req.user?.id || null,
@@ -3151,14 +3566,23 @@ apiRouter.put('/settings/logo', requireAuth, (req: AuthenticatedRequest, res: Re
       finalFavicon = finalLogo;
     }
 
-    runQuery(
-      `UPDATE company_settings
-       SET logo_url = ?, favicon_url = ?, updated_at = datetime('now', 'localtime')
-       WHERE id = 1`,
-      [finalLogo, finalFavicon]
-    );
+    if (!current) {
+      runQuery(
+        `INSERT INTO company_settings (id, company_name, logo_url, favicon_url, created_at, updated_at)
+         VALUES (1, 'Info Papandayan', ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+        [finalLogo, finalFavicon]
+      );
+    } else {
+      runQuery(
+        `UPDATE company_settings
+         SET logo_url = ?, favicon_url = ?, updated_at = datetime('now', 'localtime')
+         WHERE id = 1`,
+        [finalLogo, finalFavicon]
+      );
+    }
 
-    saveDb(true);
+    saveDb(false);
+    syncToFirestore().catch((e) => console.warn('[Background Cloud Sync Note]:', e));
 
     logActivity(
       req.user?.id || null,
@@ -3181,64 +3605,90 @@ apiRouter.put('/settings/logo', requireAuth, (req: AuthenticatedRequest, res: Re
   }
 });
 
-// Dedicated route to upload logo file directly (PNG, JPG, SVG, WebP, ICO, GIF)
-apiRouter.post('/settings/upload-logo', requireAuth, upload.single('file') as any, (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const file = (req as any).file;
-    if (!file) {
-      return res.status(400).json({ success: false, message: 'Tidak ada file logo yang diunggah' });
+// Dedicated route to upload logo file directly (supports both FormData and JSON dataUrl)
+apiRouter.post('/settings/upload-logo', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  upload.single('file')(req as any, res as any, (uploadErr: any) => {
+    if (uploadErr) {
+      console.warn('[Multer Upload Warning]:', uploadErr);
+      if (!req.body?.dataUrl && !req.body?.logo_url) {
+        return res.status(400).json({ success: false, message: 'Gagal memproses file logo: ' + (uploadErr.message || 'Ukuran terlalu besar') });
+      }
     }
 
-    const target = (req.query.target as string) || (req.body.target as string) || 'both';
-    const syncBoth = req.query.sync_both === 'true' || req.body.sync_both === 'true' || target === 'both';
+    try {
+      const file = (req as any).file;
+      const target = (req.query.target as string) || (req.body?.target as string) || 'both';
+      const syncBoth = req.query.sync_both === 'true' || req.body?.sync_both === 'true' || req.body?.sync_both === true || target === 'both';
 
-    const mime = file.mimetype || 'image/png';
-    const base64 = file.buffer.toString('base64');
-    const dataUrl = `data:${mime};base64,${base64}`;
+      let dataUrl: string | null = null;
+      if (req.body?.dataUrl) {
+        dataUrl = req.body.dataUrl;
+      } else if (req.body?.logo_url) {
+        dataUrl = req.body.logo_url;
+      } else if (file && file.buffer) {
+        const mime = file.mimetype || 'image/png';
+        const base64 = file.buffer.toString('base64');
+        dataUrl = `data:${mime};base64,${base64}`;
+      }
 
-    const current = queryOne<any>('SELECT logo_url, favicon_url FROM company_settings WHERE id = 1');
-    let newLogo = current?.logo_url || '';
-    let newFavicon = current?.favicon_url || '';
+      if (!dataUrl) {
+        return res.status(400).json({ success: false, message: 'Tidak ada file logo atau data gambar yang diterima' });
+      }
 
-    if (target === 'favicon') {
-      newFavicon = dataUrl;
-    } else if (target === 'logo') {
-      newLogo = dataUrl;
-      if (syncBoth) {
+      const current = queryOne<any>('SELECT logo_url, favicon_url FROM company_settings WHERE id = 1');
+      let newLogo = current?.logo_url || '';
+      let newFavicon = current?.favicon_url || '';
+
+      if (target === 'favicon') {
+        newFavicon = dataUrl;
+      } else if (target === 'logo') {
+        newLogo = dataUrl;
+        if (syncBoth) {
+          newFavicon = dataUrl;
+        }
+      } else {
+        // both
+        newLogo = dataUrl;
         newFavicon = dataUrl;
       }
-    } else {
-      // both
-      newLogo = dataUrl;
-      newFavicon = dataUrl;
+
+      if (!current) {
+        runQuery(
+          `INSERT INTO company_settings (id, company_name, logo_url, favicon_url, created_at, updated_at)
+           VALUES (1, 'Info Papandayan', ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+          [newLogo, newFavicon]
+        );
+      } else {
+        runQuery(
+          `UPDATE company_settings
+           SET logo_url = ?, favicon_url = ?, updated_at = datetime('now', 'localtime')
+           WHERE id = 1`,
+          [newLogo, newFavicon]
+        );
+      }
+
+      saveDb(false);
+      syncToFirestore().catch((e) => console.warn('[Background Cloud Sync Note]:', e));
+
+      logActivity(
+        req.user?.id || null,
+        req.user?.username || 'admin',
+        'Mengubah Pengaturan',
+        `Mengunggah file logo (${target}) baru`,
+        req.ip
+      );
+
+      return res.json({
+        success: true,
+        logo_url: newLogo,
+        favicon_url: newFavicon,
+        message: 'File logo berhasil diunggah dan disimpan ke aplikasi & tab browser!',
+      });
+    } catch (err: any) {
+      console.error('[Error upload-logo]:', err);
+      return res.status(500).json({ success: false, message: 'Gagal mengunggah logo: ' + err.message });
     }
-
-    runQuery(
-      `UPDATE company_settings
-       SET logo_url = ?, favicon_url = ?, updated_at = datetime('now', 'localtime')
-       WHERE id = 1`,
-      [newLogo, newFavicon]
-    );
-
-    saveDb(true);
-
-    logActivity(
-      req.user?.id || null,
-      req.user?.username || 'admin',
-      'Mengubah Pengaturan',
-      `Mengunggah file logo (${target}) baru`,
-      req.ip
-    );
-
-    return res.json({
-      success: true,
-      logo_url: newLogo,
-      favicon_url: newFavicon,
-      message: 'File logo berhasil diunggah dan disimpan ke aplikasi & tab browser!',
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, message: 'Gagal mengunggah logo: ' + err.message });
-  }
+  });
 });
 
 

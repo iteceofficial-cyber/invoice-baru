@@ -103,18 +103,20 @@ export const LoginView: React.FC<LoginViewProps> = ({
       <div className="w-full max-w-md z-10">
         {/* Brand header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#136239] text-white shadow-xl shadow-emerald-950/50 mb-3 ring-8 ring-emerald-500/10 overflow-hidden p-2">
-            {logoUrl && !logoLoadError ? (
+          {logoUrl && !logoLoadError ? (
+            <div className="flex items-center justify-center mb-4 px-2">
               <img
                 src={logoUrl}
                 alt={companyName}
-                className="w-full h-full object-contain"
+                className="max-h-24 sm:max-h-28 max-w-[280px] w-auto h-auto object-contain drop-shadow-lg transition-all"
                 onError={() => setLogoLoadError(true)}
               />
-            ) : (
+            </div>
+          ) : (
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#136239] text-white shadow-xl shadow-emerald-950/50 mb-3 ring-8 ring-emerald-500/10 overflow-hidden p-2">
               <Building2 className="w-8 h-8 text-white" />
-            )}
-          </div>
+            </div>
+          )}
           <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
             {companyName}
           </h1>

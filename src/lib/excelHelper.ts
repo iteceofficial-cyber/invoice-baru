@@ -129,9 +129,313 @@ export interface MonthlyReportPayload {
 
 export function downloadMonthlyReportExcel({ yearMonth, items, summary }: MonthlyReportPayload) {
   const workbook = XLSX.utils.book_new();
-
-  // Sheet 1: Ringkasan Bulanan
   const monthName = formatYearMonthIndo(yearMonth);
+
+  // Sheet 1: Rincian Lengkap Barang yang Dipesan oleh Pelanggan (Ke Bawah)
+  const detailRows = items.map((it, idx) => ({
+    'No': idx + 1,
+    'Tanggal Transaksi': it.tanggal || '-',
+    'Nomor Invoice': it.nomor_invoice || '-',
+    'Nama Pelanggan': it.nama_pelanggan || '-',
+    'Kode Produk': it.kode_produk || '-',
+    'Nama Barang yang Dipesan': it.nama_barang || '-',
+    'Kategori': it.kategori || '-',
+    'Jumlah (Qty)': it.jumlah || 0,
+    'Satuan': it.satuan || 'Pcs',
+    'Harga Satuan (Rp)': it.harga || 0,
+    'Total Nilai (Rp)': it.total_nilai || 0,
+  }));
+
+  const wsDetails = XLSX.utils.json_to_sheet(
+    detailRows.length > 0
+      ? detailRows
+      : [
+          {
+            'No': '-',
+            'Tanggal Transaksi': '-',
+            'Nomor Invoice': '-',
+            'Nama Pelanggan': '-',
+            'Kode Produk': '-',
+            'Nama Barang yang Dipesan': 'Belum ada transaksi pada periode ini',
+            'Kategori': '-',
+            'Jumlah (Qty)': 0,
+            'Satuan': '-',
+            'Harga Satuan (Rp)': 0,
+            'Total Nilai (Rp)': 0,
+          },
+        ]
+  );
+
+  wsDetails['!cols'] = [
+    { wch: 6 },
+    { wch: 16 },
+    { wch: 24 },
+    { wch: 30 },
+    { wch: 15 },
+    { wch: 40 },
+    { wch: 20 },
+    { wch: 14 },
+    { wch: 12 },
+    { wch: 18 },
+    { wch: 22 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsDetails, 'Rincian Barang (Ke Bawah)');
+
+  // Sheet 2: Format Faktur & Rincian Barang ke Bawah (Visual / Hierarki Faktur)
+  const invoicesMap = new Map<string, {
+    invoiceNumber: string;
+    date: string;
+    customer: string;
+    items: typeof items;
+    totalAmount: number;
+    totalQty: number;
+  }>();
+
+  for (const it of items) {
+    const invKey = it.nomor_invoice || 'INV-LAIN';
+    const existing = invoicesMap.get(invKey) || {
+      invoiceNumber: it.nomor_invoice || '-',
+      date: it.tanggal || '-',
+      customer: it.nama_pelanggan || '-',
+      items: [],
+      totalAmount: 0,
+      totalQty: 0,
+    };
+    existing.items.push(it);
+    existing.totalAmount += it.total_nilai || 0;
+    existing.totalQty += it.jumlah || 0;
+    invoicesMap.set(invKey, existing);
+  }
+
+  const groupedAoa: any[][] = [
+    ['LAPORAN REKAPITULASI BARANG KELUAR PER FAKTUR & PELANGGAN'],
+    ['Periode:', monthName || yearMonth, 'Tanggal Unduh:', new Date().toLocaleDateString('id-ID')],
+    [''],
+  ];
+
+  let grpIdx = 1;
+  for (const inv of invoicesMap.values()) {
+    groupedAoa.push([
+      `#${grpIdx++}`,
+      `NO. INVOICE: ${inv.invoiceNumber}`,
+      `TANGGAL: ${inv.date}`,
+      `PELANGGAN: ${inv.customer}`,
+      `TOTAL ITEM: ${inv.items.length}`,
+      `TOTAL QTY: ${inv.totalQty}`,
+      `TOTAL NILAI: Rp ${inv.totalAmount.toLocaleString('id-ID')}`,
+    ]);
+    groupedAoa.push([
+      '',
+      'No. Item',
+      'Kode Produk',
+      'Nama Barang yang Dipesan',
+      'Jumlah (Qty)',
+      'Satuan',
+      'Harga Satuan (Rp)',
+      'Total Nilai (Rp)',
+    ]);
+
+    inv.items.forEach((it, iIdx) => {
+      groupedAoa.push([
+        '',
+        iIdx + 1,
+        it.kode_produk || '-',
+        it.nama_barang,
+        it.jumlah,
+        it.satuan || 'Pcs',
+        it.harga,
+        it.total_nilai,
+      ]);
+    });
+
+    groupedAoa.push([
+      '',
+      '',
+      '',
+      `Subtotal Faktur ${inv.invoiceNumber}:`,
+      inv.totalQty,
+      'Unit',
+      '',
+      inv.totalAmount,
+    ]);
+    groupedAoa.push(['']); // Blank separator
+  }
+
+  const wsGrouped = XLSX.utils.aoa_to_sheet(groupedAoa);
+  wsGrouped['!cols'] = [
+    { wch: 8 },
+    { wch: 24 },
+    { wch: 18 },
+    { wch: 38 },
+    { wch: 14 },
+    { wch: 12 },
+    { wch: 18 },
+    { wch: 22 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsGrouped, 'Faktur & Barang (Ke Bawah)');
+
+  // Sheet 3: Rekap Barang Paling Sering Keluar (Top Outgoing Products)
+  const productAggMap = new Map<
+    string,
+    {
+      code: string;
+      name: string;
+      category: string;
+      unit: string;
+      totalQty: number;
+      orderCount: number;
+      totalAmount: number;
+      customers: Set<string>;
+    }
+  >();
+
+  for (const it of items) {
+    const key = (it.kode_produk || it.nama_barang || '').trim();
+    if (!key) continue;
+    const existing = productAggMap.get(key) || {
+      code: it.kode_produk || '-',
+      name: it.nama_barang || 'Barang',
+      category: it.kategori || '-',
+      unit: it.satuan || 'Pcs',
+      totalQty: 0,
+      orderCount: 0,
+      totalAmount: 0,
+      customers: new Set<string>(),
+    };
+    existing.totalQty += it.jumlah || 0;
+    existing.orderCount += 1;
+    existing.totalAmount += it.total_nilai || 0;
+    if (it.nama_pelanggan) {
+      existing.customers.add(it.nama_pelanggan.trim());
+    }
+    productAggMap.set(key, existing);
+  }
+
+  const productAggRows = Array.from(productAggMap.values())
+    .sort((a, b) => b.totalQty - a.totalQty)
+    .map((p, idx) => ({
+      'Peringkat': idx + 1,
+      'Nama Barang': p.name,
+      'Kode Produk': p.code,
+      'Kategori': p.category,
+      'Total Qty Dipesan / Keluar': p.totalQty,
+      'Satuan': p.unit,
+      'Frekuensi Pemesanan': `${p.orderCount} kali transaksi`,
+      'Total Nilai Penjualan (Rp)': p.totalAmount,
+      'Daftar Pelanggan Pemesan': Array.from(p.customers).slice(0, 8).join(', ') + (p.customers.size > 8 ? ` (+${p.customers.size - 8} lainnya)` : ''),
+    }));
+
+  const wsProducts = XLSX.utils.json_to_sheet(
+    productAggRows.length > 0
+      ? productAggRows
+      : [
+          {
+            'Peringkat': '-',
+            'Nama Barang': '-',
+            'Kode Produk': '-',
+            'Kategori': '-',
+            'Total Qty Dipesan / Keluar': 0,
+            'Satuan': '-',
+            'Frekuensi Pemesanan': '-',
+            'Total Nilai Penjualan (Rp)': 0,
+            'Daftar Pelanggan Pemesan': '-',
+          },
+        ]
+  );
+
+  wsProducts['!cols'] = [
+    { wch: 10 },
+    { wch: 38 },
+    { wch: 15 },
+    { wch: 20 },
+    { wch: 26 },
+    { wch: 12 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 45 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsProducts, 'Barang Sering Keluar');
+
+  // Sheet 4: Rekap Pesanan Per Pelanggan (Barang Ke Bawah dengan Garis Baru)
+  const customerAggMap = new Map<
+    string,
+    {
+      customerName: string;
+      itemsList: Map<string, { qty: number; unit: string }>;
+      totalInvoices: Set<string>;
+      totalQty: number;
+      totalSpent: number;
+    }
+  >();
+
+  for (const it of items) {
+    const custName = (it.nama_pelanggan || 'Pelanggan Umum').trim();
+    const existing = customerAggMap.get(custName) || {
+      customerName: custName,
+      itemsList: new Map(),
+      totalInvoices: new Set(),
+      totalQty: 0,
+      totalSpent: 0,
+    };
+
+    if (it.nomor_invoice) existing.totalInvoices.add(it.nomor_invoice);
+    existing.totalQty += it.jumlah || 0;
+    existing.totalSpent += it.total_nilai || 0;
+
+    const prodKey = it.nama_barang || 'Barang';
+    const prodExisting = existing.itemsList.get(prodKey) || { qty: 0, unit: it.satuan || 'Pcs' };
+    prodExisting.qty += it.jumlah || 0;
+    existing.itemsList.set(prodKey, prodExisting);
+
+    customerAggMap.set(custName, existing);
+  }
+
+  const customerAggRows = Array.from(customerAggMap.values())
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .map((c, idx) => {
+      const formattedItems = Array.from(c.itemsList.entries())
+        .map(([name, data], i) => `${i + 1}. ${name} (${data.qty} ${data.unit})`)
+        .join('\r\n');
+
+      return {
+        'No': idx + 1,
+        'Nama Pelanggan': c.customerName,
+        'Daftar Barang & Jumlah Dipesan (Ke Bawah)': formattedItems,
+        'Jumlah Jenis Barang': c.itemsList.size,
+        'Total Kuantitas (Qty)': c.totalQty,
+        'Total Transaksi Invoice': c.totalInvoices.size,
+        'Total Nilai Belanja (Rp)': c.totalSpent,
+      };
+    });
+
+  const wsCustomers = XLSX.utils.json_to_sheet(
+    customerAggRows.length > 0
+      ? customerAggRows
+      : [
+          {
+            'No': '-',
+            'Nama Pelanggan': '-',
+            'Daftar Barang & Jumlah Dipesan (Ke Bawah)': '-',
+            'Jumlah Jenis Barang': 0,
+            'Total Kuantitas (Qty)': 0,
+            'Total Transaksi Invoice': 0,
+            'Total Nilai Belanja (Rp)': 0,
+          },
+        ]
+  );
+
+  wsCustomers['!cols'] = [
+    { wch: 6 },
+    { wch: 30 },
+    { wch: 55 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 24 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsCustomers, 'Rekap Pesanan Per Pelanggan');
+
+  // Sheet 5: Ringkasan Bulanan
   const summarySheetData = [
     ['LAPORAN REKAPITULASI BARANG KELUAR & TRANSAKSI BULANAN'],
     ['INFO PAPANDAYAN - SISTEM INVOICE & LOGISTIK RESMI'],
@@ -151,100 +455,8 @@ export function downloadMonthlyReportExcel({ yearMonth, items, summary }: Monthl
   wsSummary['!cols'] = [{ wch: 32 }, { wch: 30 }];
   XLSX.utils.book_append_sheet(workbook, wsSummary, 'Ringkasan Bulanan');
 
-  // Sheet 2: Rincian Lengkap Barang Keluar
-  const detailRows = items.map((it, idx) => ({
-    'No': idx + 1,
-    'Tanggal': it.tanggal,
-    'Nomor Invoice': it.nomor_invoice,
-    'Nama Pelanggan': it.nama_pelanggan,
-    'Kode Produk': it.kode_produk,
-    'Nama Barang / Layanan': it.nama_barang,
-    'Kategori': it.kategori || '-',
-    'Qty Keluar': it.jumlah,
-    'Satuan': it.satuan,
-    'Harga Satuan (Rp)': it.harga,
-    'Total Nilai (Rp)': it.total_nilai,
-  }));
-
-  const wsDetails = XLSX.utils.json_to_sheet(
-    detailRows.length > 0
-      ? detailRows
-      : [
-          {
-            'No': '-',
-            'Tanggal': '-',
-            'Nomor Invoice': '-',
-            'Nama Pelanggan': '-',
-            'Kode Produk': '-',
-            'Nama Barang / Layanan': 'Belum ada transaksi di bulan ini',
-            'Kategori': '-',
-            'Qty Keluar': 0,
-            'Satuan': '-',
-            'Harga Satuan (Rp)': 0,
-            'Total Nilai (Rp)': 0,
-          },
-        ]
-  );
-
-  wsDetails['!cols'] = [
-    { wch: 6 },
-    { wch: 14 },
-    { wch: 22 },
-    { wch: 28 },
-    { wch: 14 },
-    { wch: 35 },
-    { wch: 20 },
-    { wch: 12 },
-    { wch: 10 },
-    { wch: 18 },
-    { wch: 20 },
-  ];
-  XLSX.utils.book_append_sheet(workbook, wsDetails, 'Rincian Barang Keluar');
-
-  // Sheet 3: Rekap Agregat per Produk di Bulan Tersebut
-  const productAggMap = new Map<string, { code: string; name: string; category: string; totalQty: number; totalAmount: number }>();
-  for (const it of items) {
-    const key = it.kode_produk || it.nama_barang;
-    const existing = productAggMap.get(key) || {
-      code: it.kode_produk,
-      name: it.nama_barang,
-      category: it.kategori || '-',
-      totalQty: 0,
-      totalAmount: 0,
-    };
-    existing.totalQty += it.jumlah;
-    existing.totalAmount += it.total_nilai;
-    productAggMap.set(key, existing);
-  }
-
-  const productAggRows = Array.from(productAggMap.values())
-    .sort((a, b) => b.totalQty - a.totalQty)
-    .map((p, idx) => ({
-      'Peringkat': idx + 1,
-      'Kode Produk': p.code,
-      'Nama Barang / Layanan': p.name,
-      'Kategori': p.category,
-      'Total Qty Terjual / Keluar': p.totalQty,
-      'Total Nilai Penjualan (Rp)': p.totalAmount,
-    }));
-
-  const wsProducts = XLSX.utils.json_to_sheet(
-    productAggRows.length > 0
-      ? productAggRows
-      : [{ 'Peringkat': '-', 'Kode Produk': '-', 'Nama Barang / Layanan': '-', 'Kategori': '-', 'Total Qty Terjual / Keluar': 0, 'Total Nilai Penjualan (Rp)': 0 }]
-  );
-
-  wsProducts['!cols'] = [
-    { wch: 10 },
-    { wch: 15 },
-    { wch: 35 },
-    { wch: 20 },
-    { wch: 25 },
-    { wch: 25 },
-  ];
-  XLSX.utils.book_append_sheet(workbook, wsProducts, 'Rekapitulasi Produk');
-
-  triggerDownload(workbook, `Laporan-Barang-Keluar-Bulan-${yearMonth}.xlsx`);
+  const safePeriod = (yearMonth || 'Periode').replace(/[^a-zA-Z0-9_-]/g, '-');
+  triggerDownload(workbook, `Laporan-Barang-Keluar-${safePeriod}.xlsx`);
 }
 
 // 3. Export Products List to Excel
@@ -362,40 +574,409 @@ export function exportCustomersListExcel(customers: any[]) {
   triggerDownload(workbook, `Daftar-Pelanggan-${today}.xlsx`);
 }
 
-// 5. Export Invoices to Excel
+// 5. Export Invoices to Excel with Customer Ordered Items and Top Outgoing Products
 export function exportInvoicesListExcel(invoices: any[]) {
-  const exportData = invoices.map((inv, idx) => ({
-    No: idx + 1,
-    'Nomor Invoice': inv.invoice_number,
-    'Nama Klien / Penerima': inv.customer_name,
-    'Tanggal Kegiatan': inv.activity_date,
-    'Jumlah Jenis Barang': inv.item_count || 0,
-    'Subtotal (Rp)': inv.subtotal || 0,
-    'Diskon (Rp)': inv.discount_amount || 0,
-    'PPN (Rp)': inv.tax_amount || 0,
-    'Total Nilai (Rp)': inv.total_amount || 0,
-    Status: inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft',
-  }));
-
-  const worksheet = XLSX.utils.json_to_sheet(exportData);
-  worksheet['!cols'] = [
-    { wch: 6 },
-    { wch: 22 },
-    { wch: 28 },
-    { wch: 16 },
-    { wch: 20 },
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 18 },
-    { wch: 14 },
-  ];
+  if (!invoices || invoices.length === 0) {
+    throw new Error('Tidak ada data invoice untuk diekspor');
+  }
 
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Daftar Invoice');
+
+  // Extract all individual items from invoices for downward list
+  const allOrderedItems: Array<{
+    no: number;
+    tanggal: string;
+    nomor_invoice: string;
+    nama_pelanggan: string;
+    item_index: number;
+    kode_produk: string;
+    nama_barang: string;
+    qty: number;
+    unit: string;
+    price: number;
+    subtotal: number;
+    total_invoice: number;
+    status: string;
+  }> = [];
+
+  let rowCounter = 1;
+
+  for (const inv of invoices) {
+    const rawItems = Array.isArray(inv.items) && inv.items.length > 0 ? inv.items : [];
+    const statusText = inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft';
+    const invTotal = Number(inv.total_amount) || 0;
+
+    if (rawItems.length > 0) {
+      rawItems.forEach((it: any, itemIdx: number) => {
+        allOrderedItems.push({
+          no: rowCounter++,
+          tanggal: inv.activity_date || '-',
+          nomor_invoice: inv.invoice_number || `INV-${inv.id}`,
+          nama_pelanggan: inv.customer_name || 'Pelanggan',
+          item_index: itemIdx + 1,
+          kode_produk: it.product_code || '-',
+          nama_barang: it.product_name || 'Barang',
+          qty: Number(it.qty) || 1,
+          unit: it.unit || 'Pcs',
+          price: Number(it.price) || 0,
+          subtotal: Number(it.subtotal) || (Number(it.qty) || 1) * (Number(it.price) || 0),
+          total_invoice: invTotal,
+          status: statusText,
+        });
+      });
+    } else if (inv.items_summary) {
+      // If only items_summary is available
+      const parsed = inv.items_summary.split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (parsed.length > 0) {
+        parsed.forEach((pStr: string, itemIdx: number) => {
+          allOrderedItems.push({
+            no: rowCounter++,
+            tanggal: inv.activity_date || '-',
+            nomor_invoice: inv.invoice_number || `INV-${inv.id}`,
+            nama_pelanggan: inv.customer_name || 'Pelanggan',
+            item_index: itemIdx + 1,
+            kode_produk: '-',
+            nama_barang: pStr,
+            qty: 1,
+            unit: 'Pcs',
+            price: itemIdx === 0 ? invTotal : 0,
+            subtotal: itemIdx === 0 ? invTotal : 0,
+            total_invoice: invTotal,
+            status: statusText,
+          });
+        });
+      }
+    }
+  }
+
+  // Sheet 1: Rincian Lengkap Barang Dipesan ke Bawah (Setiap Barang Baris Sendiri)
+  const sheet1Rows = allOrderedItems.map((it) => ({
+    'No': it.no,
+    'Tanggal Transaksi': it.tanggal,
+    'Nomor Invoice': it.nomor_invoice,
+    'Nama Pelanggan': it.nama_pelanggan,
+    'No. Item': it.item_index,
+    'Kode Produk': it.kode_produk,
+    'Nama Barang yang Dipesan': it.nama_barang,
+    'Jumlah (Qty)': it.qty,
+    'Satuan': it.unit,
+    'Harga Satuan (Rp)': it.price,
+    'Subtotal Barang (Rp)': it.subtotal,
+    'Total Tagihan Invoice (Rp)': it.total_invoice,
+    'Status Tagihan': it.status,
+  }));
+
+  const wsSheet1 = XLSX.utils.json_to_sheet(
+    sheet1Rows.length > 0
+      ? sheet1Rows
+      : [
+          {
+            'No': '-',
+            'Tanggal Transaksi': '-',
+            'Nomor Invoice': '-',
+            'Nama Pelanggan': '-',
+            'No. Item': '-',
+            'Kode Produk': '-',
+            'Nama Barang yang Dipesan': 'Belum ada data barang',
+            'Jumlah (Qty)': 0,
+            'Satuan': '-',
+            'Harga Satuan (Rp)': 0,
+            'Subtotal Barang (Rp)': 0,
+            'Total Tagihan Invoice (Rp)': 0,
+            'Status Tagihan': '-',
+          },
+        ]
+  );
+
+  wsSheet1['!cols'] = [
+    { wch: 6 },
+    { wch: 16 },
+    { wch: 22 },
+    { wch: 28 },
+    { wch: 10 },
+    { wch: 15 },
+    { wch: 40 },
+    { wch: 14 },
+    { wch: 10 },
+    { wch: 18 },
+    { wch: 20 },
+    { wch: 24 },
+    { wch: 15 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsSheet1, 'Rincian Barang (Ke Bawah)');
+
+  // Sheet 2: Format Faktur & Barang ke Bawah (Tampilan Hierarki per Faktur)
+  const groupedAoa: any[][] = [
+    ['LAPORAN RINCIAN FAKTUR & DAFTAR BARANG YANG DIPESAN'],
+    ['Info Papandayan - Sistem Logistik & Invoice'],
+    ['Tanggal Cetak:', new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })],
+    [''],
+  ];
+
+  invoices.forEach((inv, invIdx) => {
+    const rawItems = Array.isArray(inv.items) && inv.items.length > 0 ? inv.items : [];
+    const statusText = inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft';
+    const totalAmount = Number(inv.total_amount) || 0;
+
+    groupedAoa.push([
+      `#${invIdx + 1}`,
+      `FAKTUR: ${inv.invoice_number}`,
+      `TANGGAL: ${inv.activity_date || '-'}`,
+      `PELANGGAN: ${inv.customer_name || '-'}`,
+      `STATUS: ${statusText}`,
+      `TOTAL: Rp ${totalAmount.toLocaleString('id-ID')}`,
+    ]);
+
+    groupedAoa.push([
+      '',
+      'Item Ke',
+      'Kode Produk',
+      'Nama Barang yang Dipesan',
+      'Jumlah (Qty)',
+      'Satuan',
+      'Harga Satuan (Rp)',
+      'Subtotal (Rp)',
+    ]);
+
+    if (rawItems.length > 0) {
+      rawItems.forEach((it: any, itIdx: number) => {
+        groupedAoa.push([
+          '',
+          itIdx + 1,
+          it.product_code || '-',
+          it.product_name || 'Barang',
+          Number(it.qty) || 1,
+          it.unit || 'Pcs',
+          Number(it.price) || 0,
+          Number(it.subtotal) || (Number(it.qty) || 1) * (Number(it.price) || 0),
+        ]);
+      });
+    } else if (inv.items_summary) {
+      const parsed = inv.items_summary.split(',').map((s: string) => s.trim()).filter(Boolean);
+      parsed.forEach((pStr: string, itIdx: number) => {
+        groupedAoa.push([
+          '',
+          itIdx + 1,
+          '-',
+          pStr,
+          1,
+          'Pcs',
+          itIdx === 0 ? totalAmount : 0,
+          itIdx === 0 ? totalAmount : 0,
+        ]);
+      });
+    } else {
+      groupedAoa.push(['', 1, '-', 'Rincian produk terlampir', 1, 'Pcs', totalAmount, totalAmount]);
+    }
+
+    groupedAoa.push([
+      '',
+      '',
+      '',
+      `Subtotal Faktur ${inv.invoice_number}:`,
+      inv.total_qty || rawItems.reduce((a: number, c: any) => a + (Number(c.qty) || 0), 0) || 1,
+      'Unit',
+      '',
+      totalAmount,
+    ]);
+    groupedAoa.push(['']); // Blank separator
+  });
+
+  const wsGrouped = XLSX.utils.aoa_to_sheet(groupedAoa);
+  wsGrouped['!cols'] = [
+    { wch: 8 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 38 },
+    { wch: 14 },
+    { wch: 10 },
+    { wch: 18 },
+    { wch: 22 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsGrouped, 'Faktur & Barang (Ke Bawah)');
+
+  // Sheet 3: Rekap Barang Paling Sering Keluar (Top Outgoing Products)
+  const productAggMap = new Map<
+    string,
+    {
+      name: string;
+      code: string;
+      unit: string;
+      totalQty: number;
+      orderCount: number;
+      totalSales: number;
+      customers: Set<string>;
+    }
+  >();
+
+  for (const it of allOrderedItems) {
+    const key = it.nama_barang.trim();
+    if (!key) continue;
+    const existing = productAggMap.get(key) || {
+      name: it.nama_barang,
+      code: it.kode_produk || '-',
+      unit: it.unit || 'Pcs',
+      totalQty: 0,
+      orderCount: 0,
+      totalSales: 0,
+      customers: new Set<string>(),
+    };
+    existing.totalQty += it.qty || 0;
+    existing.orderCount += 1;
+    existing.totalSales += it.subtotal || 0;
+    if (it.nama_pelanggan) existing.customers.add(it.nama_pelanggan.trim());
+    productAggMap.set(key, existing);
+  }
+
+  const topProductsRows = Array.from(productAggMap.values())
+    .sort((a, b) => b.totalQty - a.totalQty)
+    .map((p, idx) => ({
+      'Peringkat': idx + 1,
+      'Nama Barang': p.name,
+      'Kode Produk': p.code,
+      'Total Qty Dipesan': p.totalQty,
+      'Satuan': p.unit,
+      'Frekuensi Pemesanan': `${p.orderCount} kali transaksi`,
+      'Total Nilai Penjualan (Rp)': p.totalSales,
+      'Daftar Pelanggan Pemesan': Array.from(p.customers).slice(0, 8).join(', ') + (p.customers.size > 8 ? ` (+${p.customers.size - 8} lainnya)` : ''),
+    }));
+
+  if (topProductsRows.length > 0) {
+    const wsTop = XLSX.utils.json_to_sheet(topProductsRows);
+    wsTop['!cols'] = [
+      { wch: 10 },
+      { wch: 38 },
+      { wch: 15 },
+      { wch: 20 },
+      { wch: 12 },
+      { wch: 24 },
+      { wch: 24 },
+      { wch: 45 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, wsTop, 'Barang Sering Keluar');
+  }
+
+  // Sheet 4: Rekap Seluruh Invoice (Rincian Barang ke Bawah dengan Garis Baru)
+  const invoiceRows = invoices.map((inv, idx) => {
+    let summaryOfItems = '';
+    if (Array.isArray(inv.items) && inv.items.length > 0) {
+      summaryOfItems = inv.items.map((it: any, i: number) => `${i + 1}. ${it.product_name} (${it.qty} ${it.unit || 'Pcs'})`).join('\r\n');
+    } else if (inv.items_summary) {
+      summaryOfItems = inv.items_summary.split(',').map((s: string, i: number) => `${i + 1}. ${s.trim()}`).join('\r\n');
+    }
+
+    return {
+      'No': idx + 1,
+      'Nomor Invoice': inv.invoice_number,
+      'Tanggal Kegiatan': inv.activity_date,
+      'Nama Pelanggan': inv.customer_name,
+      'Barang yang Dipesan (Ke Bawah)': summaryOfItems || 'Rincian terlampir',
+      'Total Qty Barang': inv.total_qty || (Array.isArray(inv.items) ? inv.items.reduce((a: number, c: any) => a + (Number(c.qty) || 0), 0) : 0),
+      'Subtotal (Rp)': Number(inv.subtotal) || 0,
+      'Diskon (Rp)': Number(inv.discount_amount) || 0,
+      'PPN (Rp)': Number(inv.tax_amount) || 0,
+      'Total Nilai Tagihan (Rp)': Number(inv.total_amount) || 0,
+      'Status': inv.status === 'paid' ? 'Lunas' : inv.status === 'pending' ? 'Menunggu' : inv.status === 'cancelled' ? 'Dibatalkan' : 'Draft',
+    };
+  });
+
+  const wsInvoices = XLSX.utils.json_to_sheet(invoiceRows);
+  wsInvoices['!cols'] = [
+    { wch: 6 },
+    { wch: 22 },
+    { wch: 16 },
+    { wch: 28 },
+    { wch: 45 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 22 },
+    { wch: 14 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsInvoices, 'Rekap Seluruh Invoice');
+
+  // Sheet 5: Rekap Pesanan Per Pelanggan (Barang Ke Bawah)
+  const customerAggMap = new Map<
+    string,
+    {
+      customerName: string;
+      itemsList: Map<string, { qty: number; unit: string }>;
+      totalInvoices: Set<string>;
+      totalQty: number;
+      totalSpent: number;
+    }
+  >();
+
+  for (const it of allOrderedItems) {
+    const custName = (it.nama_pelanggan || 'Pelanggan Umum').trim();
+    const existing = customerAggMap.get(custName) || {
+      customerName: custName,
+      itemsList: new Map(),
+      totalInvoices: new Set(),
+      totalQty: 0,
+      totalSpent: 0,
+    };
+
+    if (it.nomor_invoice) existing.totalInvoices.add(it.nomor_invoice);
+    existing.totalQty += it.qty || 0;
+    existing.totalSpent += it.subtotal || 0;
+
+    const prodKey = it.nama_barang || 'Barang';
+    const prodExisting = existing.itemsList.get(prodKey) || { qty: 0, unit: it.unit || 'Pcs' };
+    prodExisting.qty += it.qty || 0;
+    existing.itemsList.set(prodKey, prodExisting);
+
+    customerAggMap.set(custName, existing);
+  }
+
+  const customerAggRows = Array.from(customerAggMap.values())
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .map((c, idx) => {
+      const formattedItems = Array.from(c.itemsList.entries())
+        .map(([name, data], i) => `${i + 1}. ${name} (${data.qty} ${data.unit})`)
+        .join('\r\n');
+
+      return {
+        'No': idx + 1,
+        'Nama Pelanggan': c.customerName,
+        'Daftar Barang & Jumlah Dipesan (Ke Bawah)': formattedItems,
+        'Jumlah Jenis Barang': c.itemsList.size,
+        'Total Kuantitas (Qty)': c.totalQty,
+        'Total Transaksi Invoice': c.totalInvoices.size,
+        'Total Nilai Belanja (Rp)': c.totalSpent,
+      };
+    });
+
+  const wsCustomers = XLSX.utils.json_to_sheet(
+    customerAggRows.length > 0
+      ? customerAggRows
+      : [
+          {
+            'No': '-',
+            'Nama Pelanggan': '-',
+            'Daftar Barang & Jumlah Dipesan (Ke Bawah)': '-',
+            'Jumlah Jenis Barang': 0,
+            'Total Kuantitas (Qty)': 0,
+            'Total Transaksi Invoice': 0,
+            'Total Nilai Belanja (Rp)': 0,
+          },
+        ]
+  );
+
+  wsCustomers['!cols'] = [
+    { wch: 6 },
+    { wch: 30 },
+    { wch: 55 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 24 },
+  ];
+  XLSX.utils.book_append_sheet(workbook, wsCustomers, 'Rekap Pesanan Per Pelanggan');
 
   const today = new Date().toISOString().split('T')[0];
-  triggerDownload(workbook, `Daftar-Invoice-${today}.xlsx`);
+  triggerDownload(workbook, `Laporan-Invoice-dan-Barang-Keluar-${today}.xlsx`);
 }
 
 // 6. Resilient Client-Side Parser for Product Import Excel

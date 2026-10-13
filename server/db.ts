@@ -306,6 +306,35 @@ export async function checkAndSyncFromFirestore(force = false): Promise<void> {
   return syncCheckMutex;
 }
 
+export async function syncCompanySettingsToFirestore(): Promise<void> {
+  if (!firestoreDb) return;
+  try {
+    const comp = queryOne('SELECT * FROM company_settings WHERE id = 1;');
+    if (comp) {
+      // Safe payload to avoid Firestore 1MB document limits
+      let safeComp = { ...comp };
+      if (safeComp.logo_url && safeComp.logo_url.length > 700 * 1024) {
+        safeComp.logo_url = ''; // Preserved safely in SQLite binary chunks
+      }
+      if (safeComp.favicon_url && safeComp.favicon_url.length > 700 * 1024) {
+        safeComp.favicon_url = '';
+      }
+      await withFirestoreTimeout(
+        setDoc(doc(firestoreDb, 'settings', 'company'), {
+          ...safeComp,
+          updated_at: new Date().toISOString(),
+        }),
+        8000
+      );
+      console.log('[Firebase Cloud] Pengaturan perusahaan & logo tersinkron langsung ke Firestore doc settings/company');
+    }
+  } catch (err: any) {
+    if (err?.code === 'resource-exhausted' || err?.code === 8) {
+      markQuotaExhausted();
+    }
+  }
+}
+
 export async function syncInvoiceSettingsToFirestore(): Promise<void> {
   if (!firestoreDb) return;
   try {
@@ -364,6 +393,7 @@ export async function syncToFirestore(): Promise<void> {
     }
 
     // 1. First sync individual critical documents (settings & latest invoices)
+    await syncCompanySettingsToFirestore().catch(() => {});
     await syncInvoiceSettingsToFirestore().catch(() => {});
 
     // 2. Sync binary SQLite snapshot with safe chunking

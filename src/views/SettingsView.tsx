@@ -360,6 +360,59 @@ export const SettingsView: React.FC = () => {
   };
 
   // Logo & Browser Tab Favicon Handlers
+  // Image optimization helper (preserves transparency, keeps SVG vectors pristine, resizes raster images to crisp dimensions)
+  const optimizeImageFile = async (file: File, maxDim = 600): Promise<string> => {
+    if (file.name.toLowerCase().endsWith('.svg') || file.type.includes('svg')) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(e.target?.result as string);
+            return;
+          }
+
+          // Clear canvas to preserve transparency
+          ctx.clearRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // Use PNG to preserve transparency
+          const dataUrl = canvas.toDataURL('image/png', 0.92);
+          resolve(dataUrl);
+        };
+        img.onerror = () => resolve(e.target?.result as string);
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Logo & Browser Tab Favicon Handlers
   const handleUploadLogoFile = async (
     e: React.ChangeEvent<HTMLInputElement>,
     target: 'logo' | 'favicon' = 'logo'
@@ -367,8 +420,8 @@ export const SettingsView: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 8 * 1024 * 1024) {
-      toast.error('Ukuran file maksimal 8MB');
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error('Ukuran file maksimal 15MB');
       return;
     }
 
@@ -378,20 +431,23 @@ export const SettingsView: React.FC = () => {
       setIsUploadingLogo(true);
     }
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('target', target);
-    formData.append('sync_both', syncFaviconWithLogo ? 'true' : 'false');
-
     try {
+      // Optimize image client-side before upload to prevent network delays and database bloat
+      const optimizedDataUrl = await optimizeImageFile(file, target === 'favicon' ? 128 : 600);
+
       const res = await apiRequest(`/api/settings/upload-logo?target=${target}&sync_both=${syncFaviconWithLogo}`, {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dataUrl: optimizedDataUrl,
+          target,
+          sync_both: syncFaviconWithLogo,
+        }),
       });
 
       if (res.success) {
         if (target === 'favicon') {
-          const favUrl = res.favicon_url || res.logo_url;
+          const favUrl = res.favicon_url || res.logo_url || optimizedDataUrl;
           setFaviconInput(favUrl);
           setFaviconPreview(favUrl);
           setCompany((prev) => ({ ...prev, favicon_url: favUrl }));
@@ -401,9 +457,9 @@ export const SettingsView: React.FC = () => {
               detail: { favicon_url: favUrl, company_name: company.company_name },
             })
           );
-          toast.success('Ikon favicon tab browser berhasil diunggah dan diterapkan!');
+          toast.success('Ikon favicon tab browser berhasil diunggah dan disimpan!');
         } else {
-          const lUrl = res.logo_url;
+          const lUrl = res.logo_url || optimizedDataUrl;
           setLogoInput(lUrl);
           setLogoPreview(lUrl);
           setCompany((prev) => ({
@@ -429,16 +485,16 @@ export const SettingsView: React.FC = () => {
           );
           toast.success(
             syncFaviconWithLogo
-              ? 'Logo aplikasi & favicon tab browser berhasil diunggah dan disimpan!'
-              : 'Logo tampilan awal berhasil diunggah dan disimpan!'
+              ? 'Logo aplikasi & favicon tab browser berhasil diperbarui dan disimpan!'
+              : 'Logo tampilan awal berhasil diperbarui dan disimpan!'
           );
         }
         window.dispatchEvent(new Event('database_synced'));
       } else {
-        toast.error(res.message || 'Gagal mengunggah file logo');
+        toast.error(res.message || 'Gagal menyimpan file logo');
       }
     } catch (err: any) {
-      toast.error('Gagal mengunggah logo: ' + err.message);
+      toast.error('Gagal memproses file logo: ' + (err?.message || 'Format tidak didukung'));
     } finally {
       setIsUploadingLogo(false);
       setIsUploadingFavicon(false);
