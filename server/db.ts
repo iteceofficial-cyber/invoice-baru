@@ -216,7 +216,7 @@ export async function checkAndSyncFromFirestore(force = false): Promise<void> {
   // If cloud not configured or save is currently in flight, do not sync
   if (!firestoreDb || isSavingToFirestore) return;
   const now = Date.now();
-  if (!force && now - lastCheckTime < 8000) return; // Check at most once every 8s
+  if (!force && now - lastCheckTime < 5000) return; // Check at most once every 5s
   lastCheckTime = now;
 
   if (syncCheckMutex) {
@@ -228,37 +228,43 @@ export async function checkAndSyncFromFirestore(force = false): Promise<void> {
       if (isSavingToFirestore || !firestoreDb) return;
       // Force read directly from server with timeout
       const metaSnap = await withFirestoreTimeout(getDocFromServer(doc(firestoreDb, 'system', 'database_meta')), 8000);
-      if (!metaSnap || !metaSnap.exists()) return;
-      const meta = metaSnap.data();
-      const cloudVersion = meta?.version || 0;
+      if (metaSnap && metaSnap.exists()) {
+        const meta = metaSnap.data();
+        const cloudVersion = meta?.version || 0;
 
-      // Pull if cloud version is strictly newer OR force requested
-      if ((cloudVersion > currentDbVersion || force) && !isSavingToFirestore) {
-        console.log(`[Firebase Cloud] Snapshot cloud terdeteksi (v${cloudVersion} vs lokal v${currentDbVersion}). Mengunduh ke memori...`);
-        const cloudBuffer = await loadFromFirestore();
-        if (cloudBuffer && sqlJsEngine && !isSavingToFirestore) {
-          try {
-            const testDb = new sqlJsEngine.Database(cloudBuffer);
-            const check = testDb.exec('PRAGMA integrity_check;');
-            if (check[0]?.values[0]?.[0] === 'ok') {
-              testDb.run('PRAGMA foreign_keys = ON;');
-              dbInstance = testDb;
-              currentDbVersion = cloudVersion;
-              try {
-                fs.writeFileSync(DB_FILE, cloudBuffer);
-              } catch (e) {}
-              console.log(`[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud v${cloudVersion}.`);
-            } else {
-              console.warn('[Firebase Cloud] Snapshot cloud tidak lolos integrity check, mengabaikan.');
+        // Pull if cloud version is strictly newer OR force requested
+        if ((cloudVersion > currentDbVersion || force) && !isSavingToFirestore) {
+          console.log(`[Firebase Cloud] Snapshot cloud terdeteksi (v${cloudVersion} vs lokal v${currentDbVersion}). Mengunduh ke memori...`);
+          const cloudBuffer = await loadFromFirestore();
+          if (cloudBuffer && sqlJsEngine && !isSavingToFirestore) {
+            try {
+              const testDb = new sqlJsEngine.Database(cloudBuffer);
+              const check = testDb.exec('PRAGMA integrity_check;');
+              if (check[0]?.values[0]?.[0] === 'ok') {
+                testDb.run('PRAGMA foreign_keys = ON;');
+                dbInstance = testDb;
+                currentDbVersion = cloudVersion;
+                try {
+                  fs.writeFileSync(DB_FILE, cloudBuffer);
+                } catch (e) {}
+                console.log(`[Firebase Cloud] Basis data server berhasil diperbarui ke snapshot Cloud v${cloudVersion}.`);
+              } else {
+                console.warn('[Firebase Cloud] Snapshot cloud tidak lolos integrity check, mengabaikan.');
+              }
+            } catch (e) {
+              console.warn('[Firebase Cloud] Gagal menerapkan cloud snapshot:', e);
             }
-          } catch (e) {
-            console.warn('[Firebase Cloud] Gagal menerapkan cloud snapshot:', e);
           }
         }
       }
 
-      // Also ensure individual company settings and invoice settings are aligned
-      await syncBrandingFromFirestoreDocs(dbInstance);
+      // Reconcile branding, customers, products, and invoices from Firestore docs
+      if (dbInstance) {
+        await syncBrandingFromFirestoreDocs(dbInstance);
+        await restoreCustomersFromFirestoreDocs(dbInstance);
+        await restoreProductsFromFirestoreDocs(dbInstance);
+        await restoreInvoicesFromFirestoreDocs(dbInstance);
+      }
     } catch (err: any) {
       const msg = String(err?.message || err);
       if (
@@ -381,6 +387,17 @@ export async function syncToFirestore(): Promise<void> {
     // 1. Sync individual documents (settings & company branding)
     await syncCompanySettingsToFirestore().catch(() => {});
     await syncInvoiceSettingsToFirestore().catch(() => {});
+
+    // Sync all invoices in SQLite to individual Firestore docs
+    try {
+      const invRows = dbInstance.exec('SELECT id FROM invoices;');
+      if (invRows[0]?.values) {
+        for (const r of invRows[0].values) {
+          const invId = r[0] as number;
+          await syncSingleInvoiceToFirestore(invId).catch(() => {});
+        }
+      }
+    } catch (e) {}
 
     // 2. Sync binary SQLite snapshot with safe chunking
     if (!isFirestoreQuotaExhausted) {
@@ -538,10 +555,90 @@ async function syncBrandingFromFirestoreDocs(db: Database | null) {
   }
 }
 
+async function restoreCustomersFromFirestoreDocs(db: Database) {
+  if (!firestoreDb) return;
+  try {
+    const snap = await withFirestoreTimeout(getDocs(collection(firestoreDb, 'customers')), 8000);
+    if (!snap || snap.empty) return;
+    const existing = db.exec('SELECT id FROM customers;');
+    const existingIds = new Set<string>();
+    if (existing[0]?.values) {
+      for (const r of existing[0].values) {
+        existingIds.add(String(r[0]));
+      }
+    }
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data();
+      const id = parseInt(docSnap.id, 10);
+      if (!isNaN(id) && !existingIds.has(String(id))) {
+        try {
+          db.run(
+            `INSERT OR IGNORE INTO customers (id, name, address, phone, email, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              data.name || 'Pelanggan',
+              data.address || '',
+              data.phone || '',
+              data.email || '',
+              data.notes || '',
+              data.created_at || new Date().toISOString(),
+              data.updated_at || new Date().toISOString(),
+            ]
+          );
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
+async function restoreProductsFromFirestoreDocs(db: Database) {
+  if (!firestoreDb) return;
+  try {
+    const snap = await withFirestoreTimeout(getDocs(collection(firestoreDb, 'products')), 8000);
+    if (!snap || snap.empty) return;
+    const existing = db.exec('SELECT id FROM products;');
+    const existingIds = new Set<string>();
+    if (existing[0]?.values) {
+      for (const r of existing[0].values) {
+        existingIds.add(String(r[0]));
+      }
+    }
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data();
+      const id = parseInt(docSnap.id, 10);
+      if (!isNaN(id) && !existingIds.has(String(id))) {
+        try {
+          let catId = data.category_id || null;
+          if (catId) {
+            const checkCat = db.exec('SELECT id FROM categories WHERE id = ?;', [catId]);
+            if (!checkCat[0]?.values?.length) catId = null;
+          }
+          db.run(
+            `INSERT OR IGNORE INTO products (id, code, name, category_id, unit, price, stock, status, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              data.code || `PRD-${id}`,
+              data.name || 'Produk',
+              catId,
+              data.unit || 'Pcs',
+              data.price || 0,
+              data.stock !== undefined ? data.stock : 0,
+              data.status || 'active',
+              data.description || '',
+              data.created_at || new Date().toISOString(),
+              data.updated_at || new Date().toISOString(),
+            ]
+          );
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
 async function restoreInvoicesFromFirestoreDocs(db: Database) {
   if (!firestoreDb) return;
   try {
-    const snap = await withFirestoreTimeout(getDocs(collection(firestoreDb, 'invoices')), 8000);
+    const snap = await withFirestoreTimeout(getDocs(collection(firestoreDb, 'invoices')), 10000);
     if (!snap || snap.empty) return;
     const existing = db.exec('SELECT id, invoice_number FROM invoices;');
     const existingSet = new Set<string>();
@@ -555,67 +652,117 @@ async function restoreInvoicesFromFirestoreDocs(db: Database) {
     for (const docSnap of snap.docs) {
       const data = docSnap.data();
       const id = parseInt(docSnap.id, 10);
-      const invNum = data.invoice_number;
-      if (!existingSet.has(String(id)) && (!invNum || !existingSet.has(String(invNum).toLowerCase()))) {
-        db.run(
-          `INSERT INTO invoices (id, invoice_number, customer_id, customer_name, customer_address, customer_phone, activity_date, due_date, bank_account_no, bank_name, bank_account_name, notes, subtotal, discount_type, discount_rate, discount_amount, tax_percent, tax_amount, total_amount, status, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            id,
-            invNum || `INV-${id}`,
-            data.customer_id || null,
-            data.customer_name || 'Pelanggan',
-            data.customer_address || '',
-            data.customer_phone || '',
-            data.activity_date || new Date().toISOString().split('T')[0],
-            data.due_date || data.activity_date || new Date().toISOString().split('T')[0],
-            data.bank_account_no || '',
-            data.bank_name || '',
-            data.bank_account_name || '',
-            data.notes || '',
-            data.subtotal || 0,
-            data.discount_type || 'fixed',
-            data.discount_rate || 0,
-            data.discount_amount || 0,
-            data.tax_percent || 0,
-            data.tax_amount || 0,
-            data.total_amount || 0,
-            data.status || 'paid',
-            data.created_by_user_id || 1,
-            data.created_at || new Date().toISOString(),
-            data.updated_at || new Date().toISOString(),
-          ]
-        );
-        restored++;
-        if (data.items) {
-          try {
-            const items = typeof data.items === 'string' ? JSON.parse(data.items) : data.items;
-            if (Array.isArray(items)) {
-              for (const it of items) {
-                db.run(
-                  `INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                  [
-                    id,
-                    it.product_id || null,
-                    it.product_code || 'PRD',
-                    it.product_name || 'Item',
-                    it.qty || 1,
-                    it.unit || 'Pcs',
-                    it.price || 0,
-                    it.subtotal || 0,
-                    it.created_at || new Date().toISOString(),
-                  ]
-                );
-              }
+      if (isNaN(id)) continue;
+      const invNum = data.invoice_number || `INV-${id}`;
+
+      // Check if customer exists in SQLite; if not, safely auto-insert or set to null to prevent foreign key errors
+      let safeCustomerId: number | null = null;
+      if (data.customer_id) {
+        const parsedCid = parseInt(data.customer_id, 10);
+        if (!isNaN(parsedCid)) {
+          const checkCust = db.exec('SELECT id FROM customers WHERE id = ?;', [parsedCid]);
+          if (checkCust[0]?.values?.length) {
+            safeCustomerId = parsedCid;
+          } else {
+            try {
+              db.run(
+                `INSERT OR IGNORE INTO customers (id, name, address, phone, created_at, updated_at) VALUES (?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'));`,
+                [parsedCid, data.customer_name || 'Pelanggan', data.customer_address || '', data.customer_phone || '']
+              );
+              safeCustomerId = parsedCid;
+            } catch {
+              safeCustomerId = null;
             }
-          } catch (e) {}
+          }
+        }
+      }
+
+      if (!existingSet.has(String(id)) && (!invNum || !existingSet.has(String(invNum).toLowerCase()))) {
+        try {
+          db.run(
+            `INSERT OR REPLACE INTO invoices (
+              id, invoice_number, customer_id, customer_name, customer_address, customer_phone,
+              activity_date, due_date, bank_account_no, bank_name, bank_account_name, notes,
+              subtotal, discount_type, discount_rate, discount_amount, tax_percent, tax_amount,
+              total_amount, status, created_by_user_id, payment_methods, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              id,
+              invNum,
+              safeCustomerId,
+              data.customer_name || 'Pelanggan',
+              data.customer_address || '',
+              data.customer_phone || '',
+              data.activity_date || new Date().toISOString().split('T')[0],
+              data.due_date || data.activity_date || new Date().toISOString().split('T')[0],
+              data.bank_account_no || '',
+              data.bank_name || '',
+              data.bank_account_name || '',
+              data.notes || '',
+              data.subtotal || 0,
+              data.discount_type || 'fixed',
+              data.discount_rate || 0,
+              data.discount_amount || 0,
+              data.tax_percent || 0,
+              data.tax_amount || 0,
+              data.total_amount || 0,
+              data.status || 'paid',
+              data.created_by_user_id || 1,
+              data.payment_methods || null,
+              data.created_at || new Date().toISOString(),
+              data.updated_at || new Date().toISOString(),
+            ]
+          );
+          existingSet.add(String(id));
+          existingSet.add(String(invNum).toLowerCase());
+          restored++;
+
+          if (data.items) {
+            try {
+              db.run('DELETE FROM invoice_items WHERE invoice_id = ?;', [id]);
+              const items = typeof data.items === 'string' ? JSON.parse(data.items) : data.items;
+              if (Array.isArray(items)) {
+                for (const it of items) {
+                  let safeProductId: number | null = null;
+                  if (it.product_id) {
+                    const parsedPid = parseInt(it.product_id, 10);
+                    if (!isNaN(parsedPid)) {
+                      const checkProd = db.exec('SELECT id FROM products WHERE id = ?;', [parsedPid]);
+                      if (checkProd[0]?.values?.length) {
+                        safeProductId = parsedPid;
+                      }
+                    }
+                  }
+                  db.run(
+                    `INSERT INTO invoice_items (invoice_id, product_id, product_code, product_name, qty, unit, price, subtotal, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                      id,
+                      safeProductId,
+                      it.product_code || 'PRD',
+                      it.product_name || 'Item',
+                      it.qty || 1,
+                      it.unit || 'Pcs',
+                      it.price || 0,
+                      it.subtotal || 0,
+                      it.created_at || new Date().toISOString(),
+                    ]
+                  );
+                }
+              }
+            } catch (itErr) {
+              console.warn(`[Firebase Cloud] Note parsing items for invoice #${id}:`, itErr);
+            }
+          }
+        } catch (rowErr: any) {
+          console.warn(`[Firebase Cloud] Gagal memulihkan invoice #${id}:`, rowErr?.message || rowErr);
         }
       }
     }
     if (restored > 0) {
       console.log(`[Firebase Cloud] Berhasil memulihkan ${restored} invoice dari Firestore collection ke database lokal.`);
     }
-  } catch (e) {
-    // ignore
+  } catch (e: any) {
+    console.warn('[Firebase Cloud] Note on restoring invoices from Firestore:', e?.message || e);
   }
 }
 
@@ -696,9 +843,9 @@ export async function getDb(): Promise<Database> {
         if (check[0]?.values[0]?.[0] === 'ok') {
           dbInstance = testDb;
           loadedFromDisk = true;
-          const stat = fs.statSync(targetFile);
-          currentDbVersion = stat.mtimeMs || Date.now();
-          console.log('[Database] Menggunakan basis data lokal disk (v' + currentDbVersion + '):', targetFile);
+          // Set currentDbVersion to 0 on initial disk fallback so checkAndSyncFromFirestore can pull newer cloud snapshots
+          currentDbVersion = 0;
+          console.log('[Database] Menggunakan basis data lokal disk:', targetFile);
         }
       } catch (err) {
         console.warn('[Database] File lokal tidak lolos tes integritas:', err);
@@ -711,15 +858,17 @@ export async function getDb(): Promise<Database> {
   // PRIORITY 3: Fallback to fresh DB
   if (!dbInstance) {
     dbInstance = new SQL.Database();
-    currentDbVersion = Date.now();
+    currentDbVersion = 0;
   }
 
   // Enable foreign keys
   dbInstance.run('PRAGMA foreign_keys = ON;');
   initSchemaAndSeed(dbInstance, isBrandNewDb);
 
-  // Reconcile branding (company name & logo) and invoices from Firestore docs
+  // Reconcile branding (company name & logo), customers, products, and invoices from Firestore docs
   await syncBrandingFromFirestoreDocs(dbInstance).catch(() => {});
+  await restoreCustomersFromFirestoreDocs(dbInstance).catch(() => {});
+  await restoreProductsFromFirestoreDocs(dbInstance).catch(() => {});
   await restoreInvoicesFromFirestoreDocs(dbInstance).catch(() => {});
 
   // Save verified state to disk
