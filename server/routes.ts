@@ -17,6 +17,9 @@ import {
   getCurrentDbVersion,
   syncInvoiceSettingsToFirestore,
   syncSingleInvoiceToFirestore,
+  syncCompanySettingsToFirestore,
+  deleteInvoiceFromFirestore,
+  deleteBulkInvoicesFromFirestore,
 } from './db.ts';
 import { requireAuth, requireSuperAdmin, logActivity, AuthenticatedRequest, generateToken } from './auth.ts';
 import jsPDF from 'jspdf';
@@ -223,9 +226,23 @@ apiRouter.get('/dashboard/stats', requireAuth, (_req: AuthenticatedRequest, res:
     const curMonth = String(new Date().getMonth() + 1).padStart(2, '0');
     const monthPrefix = `${curYear}-${curMonth}`;
 
-    // Total invoice
+    // Total all invoices (including cancelled)
+    const allInvoicesRow = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM invoices`);
+    const totalAllInvoices = allInvoicesRow?.count || 0;
+
+    // Total active invoices (paid & pending)
     const invCountRow = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM invoices WHERE status != 'cancelled'`);
     const totalInvoices = invCountRow?.count || 0;
+
+    // Detailed status counts
+    const paidRow = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM invoices WHERE status = 'paid'`);
+    const paidCount = paidRow?.count || 0;
+
+    const pendingRow = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM invoices WHERE status = 'pending'`);
+    const pendingCount = pendingRow?.count || 0;
+
+    const cancelledRow = queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM invoices WHERE status = 'cancelled'`);
+    const cancelledCount = cancelledRow?.count || 0;
 
     // Invoices this month
     const invMonthRow = queryOne<{ count: number }>(
@@ -270,12 +287,12 @@ apiRouter.get('/dashboard/stats', requireAuth, (_req: AuthenticatedRequest, res:
     );
     const nilaiInvoiceThisMonth = totalAmountMonthRow?.total || 0;
 
-    // Invoice terbaru (5 data)
+    // Invoice terbaru (6 data)
     const recentInvoices = queryAll(
       `SELECT id, invoice_number, customer_name, activity_date, total_amount, status, created_at
        FROM invoices
        ORDER BY id DESC
-       LIMIT 6`
+        LIMIT 6`
     );
 
     // Barang yang paling sering keluar
@@ -331,6 +348,10 @@ apiRouter.get('/dashboard/stats', requireAuth, (_req: AuthenticatedRequest, res:
       success: true,
       data: {
         totalInvoices,
+        totalAllInvoices,
+        paidCount,
+        pendingCount,
+        cancelledCount,
         invoicesThisMonth,
         totalBarangKeluar,
         barangKeluarThisMonth,
@@ -2560,7 +2581,8 @@ apiRouter.delete('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: 
     runQuery('DELETE FROM invoice_items WHERE invoice_id = ?', [id]);
     runQuery('DELETE FROM invoices WHERE id = ?', [id]);
 
-    saveDb();
+    saveDb(true);
+    deleteInvoiceFromFirestore(Number(id)).catch(() => {});
 
     logActivity(
       req.user?.id || null,
@@ -2601,7 +2623,8 @@ apiRouter.post('/invoices/bulk-delete', requireAuth, (req: AuthenticatedRequest,
       const result = runQuery('DELETE FROM invoices WHERE id = ?', [id]);
       if (result.changes > 0) deletedCount++;
     }
-    saveDb();
+    saveDb(true);
+    deleteBulkInvoicesFromFirestore(ids.map(Number)).catch(() => {});
 
     logActivity(
       req.user?.id || null,
@@ -3455,6 +3478,57 @@ apiRouter.get('/settings/public', (_req: Request, res: Response) => {
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: 'Gagal memuat pengaturan publik: ' + err.message });
+  }
+});
+
+// Endpoint publik untuk mengubah nama perusahaan & branding (bisa diakses langsung dari layar login)
+apiRouter.post('/settings/public-branding', (req: Request, res: Response) => {
+  try {
+    const { company_name, app_name } = req.body;
+    if (!company_name || typeof company_name !== 'string' || !company_name.trim()) {
+      return res.status(400).json({ success: false, message: 'Nama perusahaan tidak boleh kosong' });
+    }
+
+    const trimmedCompany = company_name.trim();
+    const trimmedApp = app_name && typeof app_name === 'string' && app_name.trim()
+      ? app_name.trim()
+      : `${trimmedCompany} - Invoice & Logistik`;
+
+    const currentComp = queryOne<any>('SELECT * FROM company_settings WHERE id = 1');
+    if (!currentComp) {
+      runQuery(
+        `INSERT INTO company_settings (id, company_name, created_at, updated_at) VALUES (1, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))`,
+        [trimmedCompany]
+      );
+    } else {
+      runQuery(
+        `UPDATE company_settings SET company_name = ?, updated_at = datetime('now', 'localtime') WHERE id = 1`,
+        [trimmedCompany]
+      );
+    }
+
+    const currentInv = queryOne<any>('SELECT * FROM invoice_settings WHERE id = 1');
+    if (currentInv) {
+      runQuery(
+        `UPDATE invoice_settings SET app_name = ?, updated_at = datetime('now', 'localtime') WHERE id = 1`,
+        [trimmedApp]
+      );
+    }
+
+    saveDb(true);
+    syncCompanySettingsToFirestore().catch(() => {});
+    syncInvoiceSettingsToFirestore().catch(() => {});
+
+    return res.json({
+      success: true,
+      message: 'Nama perusahaan berhasil diperbarui dan disimpan secara permanen!',
+      data: {
+        company_name: trimmedCompany,
+        app_name: trimmedApp,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: 'Gagal memperbarui nama perusahaan: ' + err.message });
   }
 });
 

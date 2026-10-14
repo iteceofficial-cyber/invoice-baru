@@ -238,6 +238,8 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
       toast.success(res.message || 'Invoice berhasil dihapus dan stok barang dikembalikan');
       setDeleteInvoiceTarget(null);
       loadInvoices();
+      window.dispatchEvent(new CustomEvent('database_synced'));
+      window.dispatchEvent(new CustomEvent('invoices_updated'));
     } else {
       toast.error(res.message || 'Gagal menghapus invoice');
     }
@@ -252,6 +254,8 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
       setIsPreviewOpen(false);
       setPreviewData(null);
       loadInvoices();
+      window.dispatchEvent(new CustomEvent('database_synced'));
+      window.dispatchEvent(new CustomEvent('invoices_updated'));
     } else {
       toast.error(res.message || 'Gagal menghapus invoice');
     }
@@ -303,6 +307,8 @@ export const InvoicesListView: React.FC<InvoicesListViewProps> = ({
       setSelectedInvoiceIds([]);
       setIsBulkDeleteOpen(false);
       loadInvoices();
+      window.dispatchEvent(new CustomEvent('database_synced'));
+      window.dispatchEvent(new CustomEvent('invoices_updated'));
     } else {
       toast.error(res.message || 'Gagal menghapus invoice terpilih');
     }

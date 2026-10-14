@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Building2, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, FileText, Search } from 'lucide-react';
+import { Building2, Lock, User, Eye, EyeOff, AlertCircle, ArrowRight, FileText, Search, Edit3, Check, X, Sparkles, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { updateBrowserBranding } from '../lib/utils.ts';
 
@@ -27,6 +27,14 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [logoUrl, setLogoUrl] = useState<string>(propLogoUrl || '');
   const [companyName, setCompanyName] = useState<string>(propCompanyName || 'Info Papandayan');
   const [logoLoadError, setLogoLoadError] = useState(false);
+
+  // Edit Company Name state
+  const [isEditNameModalOpen, setIsEditNameModalOpen] = useState(false);
+  const [newCompanyName, setNewCompanyName] = useState(companyName);
+  const [newAppName, setNewAppName] = useState('');
+  const [isSavingName, setIsSavingName] = useState(false);
+  const [nameError, setNameError] = useState('');
+  const [nameSaveSuccess, setNameSaveSuccess] = useState(false);
 
   useEffect(() => {
     if (propLogoUrl !== undefined) {
@@ -93,6 +101,50 @@ export const LoginView: React.FC<LoginViewProps> = ({
     }
   };
 
+  const handleSaveCompanyName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCompanyName.trim()) {
+      setNameError('Nama perusahaan tidak boleh kosong');
+      return;
+    }
+    setIsSavingName(true);
+    setNameError('');
+    try {
+      const res = await fetch('/api/settings/public-branding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company_name: newCompanyName.trim(),
+          app_name: newAppName.trim() || `${newCompanyName.trim()} - Invoice & Logistik`,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setCompanyName(newCompanyName.trim());
+        setNameSaveSuccess(true);
+        updateBrowserBranding(logoUrl, newCompanyName.trim());
+        window.dispatchEvent(
+          new CustomEvent('app_branding_updated', {
+            detail: {
+              company_name: newCompanyName.trim(),
+              app_name: newAppName.trim() || `${newCompanyName.trim()} - Invoice & Logistik`,
+            },
+          })
+        );
+        setTimeout(() => {
+          setIsEditNameModalOpen(false);
+          setNameSaveSuccess(false);
+        }, 1000);
+      } else {
+        setNameError(data.message || 'Gagal menyimpan nama perusahaan');
+      }
+    } catch (err: any) {
+      setNameError('Gagal terhubung ke server: ' + err.message);
+    } finally {
+      setIsSavingName(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#07170e] flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden selection:bg-[#136239] selection:text-white">
       {/* Background emerald glow effects matching dashboard branding */}
@@ -117,9 +169,26 @@ export const LoginView: React.FC<LoginViewProps> = ({
               <Building2 className="w-8 h-8 text-white" />
             </div>
           )}
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-            {companyName}
-          </h1>
+          <div className="flex items-center justify-center gap-2 group flex-wrap">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              {companyName}
+            </h1>
+            <button
+              type="button"
+              onClick={() => {
+                setNewCompanyName(companyName);
+                setNewAppName(`${companyName} - Invoice & Logistik`);
+                setNameError('');
+                setNameSaveSuccess(false);
+                setIsEditNameModalOpen(true);
+              }}
+              title="Ganti nama perusahaan untuk tampilan awal dan semua perangkat"
+              className="px-2.5 py-1 rounded-lg bg-emerald-950/80 hover:bg-[#136239] border border-emerald-700/60 text-emerald-300 hover:text-white transition text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm hover:scale-105 active:scale-95"
+            >
+              <Edit3 className="w-3.5 h-3.5 text-amber-300" />
+              <span>Ganti Nama</span>
+            </button>
+          </div>
           <p className="text-emerald-400 text-xs font-bold uppercase tracking-widest mt-1">
             Sistem Invoice & Logistik Terpadu
           </p>
@@ -340,6 +409,112 @@ export const LoginView: React.FC<LoginViewProps> = ({
           </p>
         </div>
       </div>
+
+      {/* Modal Ubah Nama Perusahaan Langsung di Tampilan Awal */}
+      {isEditNameModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#0e2417] border border-emerald-800/80 rounded-2xl p-6 sm:p-7 max-w-md w-full shadow-2xl text-white relative animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-4 border-b border-emerald-900/80">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-[#136239] text-white">
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base sm:text-lg text-white">
+                    Ubah Nama Perusahaan
+                  </h3>
+                  <p className="text-xs text-emerald-300">
+                    Tampilan awal, login, & sinkronisasi semua link/perangkat
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditNameModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-emerald-900/60 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveCompanyName} className="mt-5 space-y-4">
+              {nameError && (
+                <div className="p-3 bg-rose-950/50 border border-rose-800/80 rounded-xl text-rose-200 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{nameError}</span>
+                </div>
+              )}
+
+              {nameSaveSuccess && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-500 rounded-xl text-emerald-200 text-xs flex items-center gap-2 animate-in fade-in">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Nama perusahaan berhasil diperbarui & tersimpan permanen!</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-emerald-300 mb-1.5">
+                  Nama Perusahaan / Bisnis <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newCompanyName}
+                  onChange={(e) => setNewCompanyName(e.target.value)}
+                  placeholder="Contoh: Info Papandayan, CV Megah Abadi, dll"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#07170e] border border-emerald-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-emerald-300 mb-1.5">
+                  Subjudul Aplikasi (Opsional)
+                </label>
+                <input
+                  type="text"
+                  value={newAppName}
+                  onChange={(e) => setNewAppName(e.target.value)}
+                  placeholder={`${newCompanyName || 'Perusahaan'} - Invoice & Logistik`}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#07170e] border border-emerald-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-900/60 text-[11px] text-emerald-300/90 leading-relaxed">
+                💡 <span className="font-semibold text-emerald-200">Permanen & Lintas Perangkat:</span> Nama yang disimpan akan otomatis tersinkronisasi ke Cloud Firestore dan tampil di layar login, dashboard, invoice cetak, dan tab browser.
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setIsEditNameModalOpen(false)}
+                  disabled={isSavingName}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-300 hover:text-white hover:bg-emerald-900/40 transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingName}
+                  className="px-5 py-2.5 rounded-xl text-sm font-bold bg-[#136239] hover:bg-emerald-700 text-white shadow-lg transition flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingName ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Simpan & Terapkan</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

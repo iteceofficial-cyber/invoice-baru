@@ -12,6 +12,10 @@ import {
   Printer,
   Sparkles,
   Layers,
+  RefreshCw,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
 } from 'lucide-react';
 import { apiRequest } from '../services/api.ts';
 import { formatRupiah, formatNumber, formatDateIndo } from '../lib/utils.ts';
@@ -21,6 +25,10 @@ import { NavTab } from '../components/Sidebar.tsx';
 
 interface DashboardStats {
   totalInvoices: number;
+  totalAllInvoices?: number;
+  paidCount?: number;
+  pendingCount?: number;
+  cancelledCount?: number;
   invoicesThisMonth: number;
   totalBarangKeluar: number;
   barangKeluarThisMonth: number;
@@ -46,27 +54,40 @@ interface DashboardViewProps {
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onPreviewInvoice }) => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const toast = useToast();
 
-  const loadStats = async () => {
-    setLoading(true);
+  const loadStats = async (showToast = false) => {
+    if (!stats) setLoading(true);
+    setIsRefreshing(true);
     const res = await apiRequest<DashboardStats>('/api/dashboard/stats');
     if (res.success && res.data) {
       setStats(res.data);
+      if (showToast) {
+        toast.success('Statistik dashboard berhasil diperbarui!');
+      }
     } else {
       toast.error(res.message || 'Gagal memuat ringkasan dashboard');
     }
     setLoading(false);
+    setIsRefreshing(false);
   };
 
   useEffect(() => {
     loadStats();
     const handleSync = () => loadStats();
     window.addEventListener('database_synced', handleSync);
+    window.addEventListener('invoices_updated', handleSync);
     window.addEventListener('focus', handleSync);
+    const handleVis = () => {
+      if (document.visibilityState === 'visible') handleSync();
+    };
+    document.addEventListener('visibilitychange', handleVis);
     return () => {
       window.removeEventListener('database_synced', handleSync);
+      window.removeEventListener('invoices_updated', handleSync);
       window.removeEventListener('focus', handleSync);
+      document.removeEventListener('visibilitychange', handleVis);
     };
   }, []);
 
@@ -137,6 +158,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onPrev
 
           <div className="flex flex-wrap items-center gap-3">
             <button
+              onClick={() => loadStats(true)}
+              disabled={isRefreshing}
+              className="inline-flex items-center gap-2 px-4 py-3 rounded-2xl bg-white/15 hover:bg-white/20 text-white font-medium text-sm backdrop-blur-md transition-all border border-white/20 cursor-pointer disabled:opacity-60 shadow-sm"
+              title="Segarkan data & sinkronisasi terbaru dari database"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-amber-300' : ''}`} />
+              <span>Segarkan Data</span>
+            </button>
+            <button
               onClick={() => onNavigate('create-invoice')}
               className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-white text-[#136239] hover:bg-emerald-50 font-bold text-sm shadow-lg transition-all hover:scale-105 active:scale-95 cursor-pointer"
             >
@@ -157,7 +187,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onPrev
       {/* 5 Main Summary Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Total Invoices */}
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition-all duration-200">
+        <div 
+          onClick={() => onNavigate('invoices')}
+          className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md transition-all duration-200 cursor-pointer hover:border-blue-300"
+          title="Klik untuk membuka daftar seluruh invoice"
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
               Total Invoice
@@ -168,14 +202,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onPrev
           </div>
           <div className="mt-3">
             <p className="text-2xl font-extrabold text-slate-900 tracking-tight">
-              {formatNumber(stats.totalInvoices)}
+              {formatNumber(stats.totalAllInvoices !== undefined ? stats.totalAllInvoices : stats.totalInvoices)}
             </p>
-            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+            <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
               <span className="text-emerald-600 font-bold">
-                {stats.invoicesThisMonth} transaksi
-              </span>{' '}
-              bulan ini
-            </p>
+                {stats.paidCount ?? 0} Lunas
+              </span>
+              <span>•</span>
+              <span className="text-amber-600 font-bold">
+                {stats.pendingCount ?? 0} Menunggu
+              </span>
+              {(stats.cancelledCount ?? 0) > 0 && (
+                <>
+                  <span>•</span>
+                  <span className="text-rose-500 font-medium">
+                    {stats.cancelledCount} Batal
+                  </span>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

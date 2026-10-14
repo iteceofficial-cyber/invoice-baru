@@ -400,8 +400,16 @@ export const SettingsView: React.FC = () => {
           ctx.clearRect(0, 0, width, height);
           ctx.drawImage(img, 0, 0, width, height);
 
-          // Use PNG to preserve transparency
-          const dataUrl = canvas.toDataURL('image/png', 0.92);
+          // Use PNG or WebP with appropriate compression to ensure fast cross-device sync
+          let dataUrl = canvas.toDataURL('image/png');
+          if (dataUrl.length > 200 * 1024) {
+            try {
+              const webp = canvas.toDataURL('image/webp', 0.88);
+              if (webp && webp.startsWith('data:image/webp')) {
+                dataUrl = webp;
+              }
+            } catch (e) {}
+          }
           resolve(dataUrl);
         };
         img.onerror = () => resolve(e.target?.result as string);
@@ -433,7 +441,7 @@ export const SettingsView: React.FC = () => {
 
     try {
       // Optimize image client-side before upload to prevent network delays and database bloat
-      const optimizedDataUrl = await optimizeImageFile(file, target === 'favicon' ? 128 : 600);
+      const optimizedDataUrl = await optimizeImageFile(file, target === 'favicon' ? 128 : 320);
 
       const res = await apiRequest(`/api/settings/upload-logo?target=${target}&sync_both=${syncFaviconWithLogo}`, {
         method: 'POST',
